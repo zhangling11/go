@@ -16,4 +16,6 @@ func main() {
 	)
 	// 修复：使用所有声明的变量，消除 "declared and not used" 编译错误
 	fmt.Println(a, foo, baz, bar, foo2, constant)
+	fmt.Println("hello Go")
+	fmt.Println("hello Go")
 }
