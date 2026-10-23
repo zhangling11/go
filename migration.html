@@ -1,0 +1,1329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>KVM 虚拟机热迁移全过程</title>
+
+<style>
+    * {
+        box-sizing: border-box;
+    }
+
+    body {
+        margin: 0;
+        font-family: "Microsoft YaHei", Arial, sans-serif;
+        background: #f4f6f9;
+        color: #1f2937;
+    }
+
+    header {
+        background: #111827;
+        color: white;
+        padding: 24px 40px;
+    }
+
+    header h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+    }
+
+    header p {
+        margin: 0;
+        color: #cbd5e1;
+    }
+
+    .container {
+        max-width: 1300px;
+        margin: 28px auto;
+        padding: 0 20px;
+    }
+
+    .stage {
+        background: white;
+        border-radius: 14px;
+        padding: 28px;
+        box-shadow: 0 6px 22px rgba(0, 0, 0, .08);
+    }
+
+    /* =========================
+       A/B 服务器区域
+       ========================= */
+
+    .arch {
+        display: grid;
+        grid-template-columns: 1fr 220px 1fr;
+        gap: 22px;
+        align-items: center;
+    }
+
+    .host {
+        border: 2px solid #d1d5db;
+        border-radius: 14px;
+        padding: 20px;
+        min-height: 410px;
+        transition: .4s;
+    }
+
+    .host.active {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 4px rgba(37, 99, 235, .08);
+    }
+
+    .host h2 {
+        margin-top: 0;
+    }
+
+    .host-status {
+        margin-bottom: 12px;
+        font-size: 14px;
+        font-weight: bold;
+    }
+
+    /* =========================
+       VM
+       ========================= */
+
+    .vm {
+        margin-top: 18px;
+        background: #eef2ff;
+        border: 2px solid #6366f1;
+        border-radius: 12px;
+        padding: 16px;
+        transition: .4s;
+    }
+
+    .vm.off {
+        opacity: .45;
+        background: #e5e7eb;
+        border-color: #9ca3af;
+    }
+
+    .vm.wait {
+        background: #f8fafc;
+        border-style: dashed;
+        border-color: #94a3b8;
+    }
+
+    .vm.running {
+        background: #ecfdf5;
+        border-color: #10b981;
+    }
+
+    .vm.paused {
+        background: #fff7ed;
+        border-color: #f59e0b;
+    }
+
+    .item {
+        background: white;
+        margin: 7px 0;
+        padding: 9px 10px;
+        border-radius: 7px;
+        border: 1px solid #e5e7eb;
+        font-size: 14px;
+    }
+
+    .bridge {
+        margin-top: 18px;
+        padding: 12px;
+        text-align: center;
+        border-radius: 8px;
+        background: #f1f5f9;
+        font-size: 14px;
+    }
+
+    /* =========================
+       中间迁移通道
+       ========================= */
+
+    .channel {
+        text-align: center;
+        position: relative;
+    }
+
+    .channel-title {
+        font-weight: bold;
+        color: #374151;
+    }
+
+    .arrow {
+        height: 9px;
+        border-radius: 5px;
+        background: #d1d5db;
+        position: relative;
+        overflow: hidden;
+        margin: 20px 0;
+    }
+
+    .flow {
+        position: absolute;
+        left: -40%;
+        width: 40%;
+        height: 100%;
+        background: #2563eb;
+    }
+
+    .arrow.active .flow {
+        animation: flow 1.2s linear infinite;
+    }
+
+    @keyframes flow {
+        from {
+            left: -40%;
+        }
+
+        to {
+            left: 100%;
+        }
+    }
+
+    .packet {
+        font-weight: bold;
+        min-height: 55px;
+        color: #2563eb;
+        line-height: 1.5;
+    }
+
+    .switch-text {
+        font-size: 14px;
+        color: #6b7280;
+    }
+
+    /* =========================
+       控制按钮
+       ========================= */
+
+    .controls {
+        text-align: center;
+        margin: 28px 0 20px;
+    }
+
+    button {
+        border: 0;
+        border-radius: 8px;
+        padding: 12px 22px;
+        margin: 5px;
+        font-size: 15px;
+        cursor: pointer;
+        transition: .2s;
+    }
+
+    button:hover {
+        transform: translateY(-1px);
+    }
+
+    .start {
+        background: #2563eb;
+        color: white;
+    }
+
+    .next {
+        background: #059669;
+        color: white;
+    }
+
+    .reset {
+        background: #e5e7eb;
+        color: #111827;
+    }
+
+    /* =========================
+       进度条
+       ========================= */
+
+    .progress-box {
+        margin-top: 22px;
+    }
+
+    .progress-text {
+        margin-bottom: 8px;
+        font-weight: bold;
+    }
+
+    .progress {
+        height: 15px;
+        background: #e5e7eb;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+
+    .progress-bar {
+        width: 0%;
+        height: 100%;
+        background: #2563eb;
+        transition: width .7s;
+    }
+
+    /* =========================
+       下方步骤说明
+       ========================= */
+
+    .info {
+        margin-top: 28px;
+        display: grid;
+        grid-template-columns: 280px 1fr;
+        gap: 20px;
+    }
+
+    .steps {
+        background: #f8fafc;
+        border-radius: 10px;
+        padding: 15px;
+    }
+
+    .step {
+        padding: 10px;
+        margin: 5px 0;
+        border-radius: 6px;
+        font-size: 14px;
+        transition: .3s;
+    }
+
+    .step.current {
+        background: #dbeafe;
+        color: #1d4ed8;
+        font-weight: bold;
+    }
+
+    .step.done {
+        color: #059669;
+    }
+
+    .explain {
+        border-left: 5px solid #2563eb;
+        background: #eff6ff;
+        padding: 18px;
+        border-radius: 8px;
+        min-height: 220px;
+    }
+
+    .explain h3 {
+        margin-top: 0;
+    }
+
+    .explain p {
+        line-height: 1.8;
+    }
+
+    .counter {
+        font-family: Consolas, monospace;
+        font-size: 18px;
+        font-weight: bold;
+    }
+
+    /* =========================
+       状态信息
+       ========================= */
+
+    .state-grid {
+        margin-top: 28px;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+    }
+
+    .state-card {
+        padding: 15px;
+        background: #f8fafc;
+        border-radius: 10px;
+        border: 1px solid #e5e7eb;
+    }
+
+    .state-card strong {
+        display: block;
+        margin-bottom: 8px;
+    }
+
+    .state-value {
+        color: #2563eb;
+        font-size: 14px;
+    }
+
+    /* =========================
+       总结
+       ========================= */
+
+    .note {
+        margin-top: 26px;
+        padding: 18px;
+        background: #fff7ed;
+        border-left: 5px solid #f59e0b;
+        border-radius: 8px;
+        line-height: 1.8;
+    }
+
+    .summary {
+        margin-top: 20px;
+        padding: 18px;
+        background: #ecfdf5;
+        border-left: 5px solid #10b981;
+        border-radius: 8px;
+        line-height: 1.8;
+    }
+
+    @media(max-width: 900px) {
+
+        .arch {
+            grid-template-columns: 1fr;
+        }
+
+        .info {
+            grid-template-columns: 1fr;
+        }
+
+        .state-grid {
+            grid-template-columns: 1fr 1fr;
+        }
+    }
+</style>
+</head>
+
+<body>
+
+<header>
+    <h1>KVM / QEMU 虚拟机热迁移全过程</h1>
+
+    <p>
+        Pre-copy → Disk Sync → Dirty Page →
+        Stop-and-Copy → CPU / Device State →
+        Resume → Network Switch
+    </p>
+</header>
+
+
+<div class="container">
+
+<div class="stage">
+
+    <!-- =========================
+         A / Migration / B
+         ========================= -->
+
+    <div class="arch">
+
+        <!-- 服务器 A -->
+
+        <div class="host active" id="hostA">
+
+            <h2>服务器 A（源端）</h2>
+
+            <div class="host-status" id="hostAStatus">
+                状态：VM 正在 A 上运行
+            </div>
+
+            <div class="vm running" id="vmA">
+
+                <strong>虚拟机 test2</strong>
+
+                <div class="item" id="cpuA">
+                    CPU：正在执行
+                </div>
+
+                <div class="item" id="ramA">
+                    RAM：Guest 内存
+                </div>
+
+                <div class="item" id="diskA">
+                    Disk：虚拟磁盘
+                </div>
+
+                <div class="item" id="nicA">
+                    NIC：IP / MAC 保持
+                </div>
+
+                <div class="item" id="deviceA">
+                    Device：中断 / 时钟 / 控制器
+                </div>
+
+                <div class="item">
+                    业务计数：
+                    <span class="counter" id="counterA">
+                        1000
+                    </span>
+                </div>
+
+            </div>
+
+            <div class="bridge">
+                Guest
+                ↓
+                A Bridge
+                ↓
+                A 物理网卡
+            </div>
+
+        </div>
+
+
+        <!-- 中间迁移通道 -->
+
+        <div class="channel">
+
+            <div class="channel-title">
+                Migration Channel
+            </div>
+
+            <div class="arrow" id="arrow">
+                <div class="flow"></div>
+            </div>
+
+            <div class="packet" id="packet">
+                等待开始迁移
+            </div>
+
+            <div class="switch-text" id="switchText">
+                Server A → Server B
+            </div>
+
+        </div>
+
+
+        <!-- 服务器 B -->
+
+        <div class="host" id="hostB">
+
+            <h2>服务器 B（目标端）</h2>
+
+            <div class="host-status" id="hostBStatus">
+                状态：等待迁移
+            </div>
+
+            <div class="vm wait" id="vmB">
+
+                <strong>虚拟机目标运行环境</strong>
+
+                <div class="item" id="cpuB">
+                    CPU：等待状态
+                </div>
+
+                <div class="item" id="ramB">
+                    RAM：等待内存
+                </div>
+
+                <div class="item" id="diskB">
+                    Disk：等待磁盘
+                </div>
+
+                <div class="item" id="nicB">
+                    NIC：等待接管
+                </div>
+
+                <div class="item" id="deviceB">
+                    Device：等待设备状态
+                </div>
+
+                <div class="item">
+                    业务计数：
+                    <span class="counter" id="counterB">
+                        --
+                    </span>
+                </div>
+
+            </div>
+
+            <div class="bridge">
+                Guest
+                ↓
+                B Bridge
+                ↓
+                B 物理网卡
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- =========================
+         控制按钮
+         ========================= -->
+
+    <div class="controls">
+
+        <button class="start" onclick="startMigration()">
+            ▶ 自动演示热迁移
+        </button>
+
+        <button class="next" onclick="nextStage()">
+            下一阶段 →
+        </button>
+
+        <button class="reset" onclick="resetDemo()">
+            ↻ 重置演示
+        </button>
+
+    </div>
+
+
+    <!-- =========================
+         进度条
+         ========================= -->
+
+    <div class="progress-box">
+
+        <div class="progress-text" id="progressText">
+            迁移进度：0%
+        </div>
+
+        <div class="progress">
+
+            <div
+                class="progress-bar"
+                id="progress">
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- =========================
+         迁移步骤
+         ========================= -->
+
+    <div class="info">
+
+        <div class="steps">
+
+            <div class="step" id="s0">
+                ① 迁移准备
+            </div>
+
+            <div class="step" id="s1">
+                ② 磁盘预拷贝
+            </div>
+
+            <div class="step" id="s2">
+                ③ 内存 Pre-copy
+            </div>
+
+            <div class="step" id="s3">
+                ④ Dirty Page 同步
+            </div>
+
+            <div class="step" id="s4">
+                ⑤ Stop-and-Copy
+            </div>
+
+            <div class="step" id="s5">
+                ⑥ CPU / Device 状态迁移
+            </div>
+
+            <div class="step" id="s6">
+                ⑦ B 恢复运行
+            </div>
+
+            <div class="step" id="s7">
+                ⑧ 网络出口切换
+            </div>
+
+        </div>
+
+
+        <div class="explain">
+
+            <h3 id="title">
+                等待开始
+            </h3>
+
+            <p id="description">
+
+                点击“自动演示热迁移”，或者点击“下一阶段”，
+                观察虚拟机如何在保持业务运行的情况下，
+                从服务器 A 转移到服务器 B。
+
+            </p>
+
+        </div>
+
+    </div>
+
+
+    <!-- =========================
+         各类状态
+         ========================= -->
+
+    <div class="state-grid">
+
+        <div class="state-card">
+            <strong>内存 RAM</strong>
+
+            <div class="state-value" id="ramState">
+                尚未迁移
+            </div>
+        </div>
+
+
+        <div class="state-card">
+            <strong>虚拟磁盘</strong>
+
+            <div class="state-value" id="diskState">
+                尚未迁移
+            </div>
+        </div>
+
+
+        <div class="state-card">
+            <strong>CPU / Device</strong>
+
+            <div class="state-value" id="cpuState">
+                A 正在执行
+            </div>
+        </div>
+
+
+        <div class="state-card">
+            <strong>网络</strong>
+
+            <div class="state-value" id="networkState">
+                当前出口：服务器 A
+            </div>
+        </div>
+
+    </div>
+
+
+    <!-- =========================
+         总结
+         ========================= -->
+
+    <div class="note">
+
+        <strong>核心思想：</strong>
+
+        大数据提前搬，变化数据反复补，
+        关键状态最后搬，通过短暂的
+        Stop-and-Copy 完成最终一致切换。
+
+    </div>
+
+
+    <div class="summary">
+
+        <strong>热迁移并不是关机后重新启动：</strong>
+
+        Guest 在迁移的大部分时间仍然运行在服务器 A。
+        QEMU 提前迁移 RAM 和非共享存储数据，
+        并持续同步运行过程中发生的变化。
+
+        当剩余状态足够少时，
+        A 上的 vCPU 短暂暂停，
+        最后的脏页、CPU 寄存器和虚拟设备状态被传输到 B。
+
+        B 恢复这些状态后继续执行，
+        Guest 的 IP、MAC 和应用运行状态通常保持，
+        而底层物理网络出口由 A 切换到 B。
+
+    </div>
+
+</div>
+
+</div>
+
+
+<script>
+
+    /*
+    ============================================
+    基本变量
+    ============================================
+    */
+
+    let running = false;
+
+    let currentStage = -1;
+
+    let counter = 1000;
+
+    let counterTimer = null;
+
+
+    /*
+    ============================================
+    迁移各阶段数据
+    ============================================
+    */
+
+    const stages = [
+
+        {
+            title: "阶段 1：迁移准备",
+
+            packet: "建立 Migration Connection",
+
+            progress: 5,
+
+            text:
+                "执行 Live Migration 后，虚拟机不会立即停止。" +
+                "此时 Guest 仍然运行在服务器 A：" +
+                "CPU 继续执行，内存继续变化，磁盘继续产生 I/O，" +
+                "网络和应用仍然可以继续工作。"
+        },
+
+
+        {
+            title: "阶段 2：磁盘预拷贝",
+
+            packet: "Disk Blocks →",
+
+            progress: 25,
+
+            text:
+                "当前实验属于非共享存储场景。" +
+                "因此目标服务器 B 需要获得虚拟机磁盘数据。" +
+                "迁移前期先复制大量已有磁盘块。" +
+                "与此同时，Guest 仍然在 A 上运行，" +
+                "所以还可能继续产生新的磁盘写入。"
+        },
+
+
+        {
+            title: "阶段 3：内存 Pre-copy",
+
+            packet: "RAM Pages →",
+
+            progress: 48,
+
+            text:
+                "QEMU 开始将 Guest 的大量 RAM 页面从 A 复制到 B。" +
+                "这个过程中 A 上的虚拟机仍然继续运行。" +
+                "这样可以避免最终切换时一次性复制全部内存，" +
+                "从而减少虚拟机真正暂停的时间。"
+        },
+
+
+        {
+            title: "阶段 4：Dirty Page 多轮同步",
+
+            packet: "Dirty Pages → → →",
+
+            progress: 70,
+
+            text:
+                "由于 Guest 仍然在 A 上运行，" +
+                "已经复制过的内存页可能再次被程序修改。" +
+                "这些页面会成为 Dirty Page（脏页）。" +
+                "KVM/QEMU 会追踪这些变化，并进行多轮重新同步，" +
+                "直到剩余需要迁移的数据足够少。"
+        },
+
+
+        {
+            title: "阶段 5：Stop-and-Copy",
+
+            packet: "⏸ A 暂停",
+
+            progress: 82,
+
+            text:
+                "这是整个热迁移真正的最终切换时刻。" +
+                "A 上的 vCPU 被短暂暂停。" +
+                "注意：这是暂停，并不是 Guest 正常关机。" +
+                "暂停后 CPU 不再继续修改内存和设备状态，" +
+                "从而形成一个明确、一致的最终状态。"
+        },
+
+
+        {
+            title: "阶段 6：最终 CPU / Device 状态迁移",
+
+            packet: "Final RAM + CPU + Device →",
+
+            progress: 92,
+
+            text:
+                "A 暂停后，QEMU 将最后剩余的脏内存页、" +
+                "CPU 寄存器、程序执行位置、中断状态、" +
+                "虚拟网卡、磁盘控制器、时钟、定时器等关键状态" +
+                "传输到服务器 B。"
+        },
+
+
+        {
+            title: "阶段 7：服务器 B 恢复运行",
+
+            packet: "B Resume ▶",
+
+            progress: 98,
+
+            text:
+                "B 收到最终状态后恢复虚拟 CPU、内存和虚拟设备。" +
+                "Guest 从 A 最终暂停的位置继续执行。" +
+                "因此这不是重新启动操作系统，" +
+                "而是继续执行原来正在运行的虚拟机状态。"
+        },
+
+
+        {
+            title: "阶段 8：网络出口切换",
+
+            packet: "Network → Server B",
+
+            progress: 100,
+
+            text:
+                "迁移完成后，Guest 的 IP、MAC 和内部网络状态通常保持不变。" +
+                "但是底层物理网络出口发生变化：" +
+                "原来通过 A 的 Bridge 和物理网卡访问网络，" +
+                "现在改为通过 B 的 Bridge 和物理网卡。" +
+                "最终 A 停止运行该 VM，B 正式接管。"
+        }
+
+    ];
+
+
+    /*
+    ============================================
+    Counter
+    ============================================
+    */
+
+    function startCounterA() {
+
+        if (counterTimer) {
+            clearInterval(counterTimer);
+        }
+
+        counterTimer = setInterval(function () {
+
+            counter++;
+
+            document.getElementById("counterA").innerText =
+                counter;
+
+        }, 1000);
+    }
+
+
+    function startCounterB() {
+
+        if (counterTimer) {
+            clearInterval(counterTimer);
+        }
+
+        document.getElementById("counterB").innerText =
+            counter;
+
+        counterTimer = setInterval(function () {
+
+            counter++;
+
+            document.getElementById("counterB").innerText =
+                counter;
+
+        }, 1000);
+    }
+
+
+    /*
+    ============================================
+    步骤状态
+    ============================================
+    */
+
+    function markStep(index) {
+
+        for (let i = 0; i < stages.length; i++) {
+
+            const element =
+                document.getElementById("s" + i);
+
+            if (i < index) {
+
+                element.className =
+                    "step done";
+
+            } else if (i === index) {
+
+                element.className =
+                    "step current";
+
+            } else {
+
+                element.className =
+                    "step";
+            }
+        }
+    }
+
+
+    /*
+    ============================================
+    执行某一个迁移阶段
+    ============================================
+    */
+
+    function showStage(index) {
+
+        if (index < 0 || index >= stages.length) {
+            return;
+        }
+
+        currentStage = index;
+
+        const stage = stages[index];
+
+
+        markStep(index);
+
+
+        document.getElementById("title").innerText =
+            stage.title;
+
+
+        document.getElementById("description").innerText =
+            stage.text;
+
+
+        document.getElementById("packet").innerText =
+            stage.packet;
+
+
+        document.getElementById("progress").style.width =
+            stage.progress + "%";
+
+
+        document.getElementById("progressText").innerText =
+            "迁移进度：" + stage.progress + "%";
+
+
+        /*
+        ========================================
+        阶段 0：迁移准备
+        ========================================
+        */
+
+        if (index === 0) {
+
+            document
+                .getElementById("arrow")
+                .classList.add("active");
+
+
+            document.getElementById("hostAStatus").innerText =
+                "状态：VM 正在 A 上运行";
+
+
+            document.getElementById("hostBStatus").innerText =
+                "状态：正在建立迁移环境";
+
+
+            startCounterA();
+        }
+
+
+        /*
+        ========================================
+        阶段 1：磁盘预拷贝
+        ========================================
+        */
+
+        if (index === 1) {
+
+            document.getElementById("diskState").innerText =
+                "正在复制磁盘块 A → B";
+
+
+            document.getElementById("diskB").innerText =
+                "Disk：正在接收磁盘数据";
+        }
+
+
+        /*
+        ========================================
+        阶段 2：内存 Pre-copy
+        ========================================
+        */
+
+        if (index === 2) {
+
+            document.getElementById("ramState").innerText =
+                "Pre-copy：正在复制 RAM";
+
+
+            document.getElementById("ramB").innerText =
+                "RAM：正在接收内存页";
+        }
+
+
+        /*
+        ========================================
+        阶段 3：脏页同步
+        ========================================
+        */
+
+        if (index === 3) {
+
+            document.getElementById("ramState").innerText =
+                "Dirty Page：多轮同步中";
+
+
+            document.getElementById("ramA").innerText =
+                "RAM：运行中，持续产生 Dirty Page";
+
+
+            document.getElementById("ramB").innerText =
+                "RAM：持续接收 Dirty Page";
+        }
+
+
+        /*
+        ========================================
+        阶段 4：Stop-and-Copy
+        ========================================
+        */
+
+        if (index === 4) {
+
+            if (counterTimer) {
+                clearInterval(counterTimer);
+            }
+
+
+            document.getElementById("vmA").className =
+                "vm paused";
+
+
+            document.getElementById("cpuA").innerText =
+                "CPU：⏸ vCPU 暂停";
+
+
+            document.getElementById("counterA").innerText =
+                counter + "（暂停）";
+
+
+            document.getElementById("cpuState").innerText =
+                "Stop-and-Copy：A vCPU 暂停";
+
+
+            document.getElementById("hostAStatus").innerText =
+                "状态：最终切换中";
+        }
+
+
+        /*
+        ========================================
+        阶段 5：最终状态迁移
+        ========================================
+        */
+
+        if (index === 5) {
+
+            document.getElementById("ramState").innerText =
+                "同步最后一批 Dirty Page";
+
+
+            document.getElementById("cpuState").innerText =
+                "正在迁移 CPU / Device 状态";
+
+
+            document.getElementById("cpuB").innerText =
+                "CPU：正在接收寄存器状态";
+
+
+            document.getElementById("deviceB").innerText =
+                "Device：正在恢复设备状态";
+
+
+            document.getElementById("diskState").innerText =
+                "完成最终磁盘同步";
+        }
+
+
+        /*
+        ========================================
+        阶段 6：B Resume
+        ========================================
+        */
+
+        if (index === 6) {
+
+            document.getElementById("vmB").className =
+                "vm running";
+
+
+            document
+                .getElementById("hostB")
+                .classList.add("active");
+
+
+            document.getElementById("hostBStatus").innerText =
+                "状态：VM 已在 B 上恢复运行";
+
+
+            document.getElementById("cpuB").innerText =
+                "CPU：▶ 已恢复执行";
+
+
+            document.getElementById("ramB").innerText =
+                "RAM：状态恢复完成";
+
+
+            document.getElementById("diskB").innerText =
+                "Disk：目标磁盘已接管";
+
+
+            document.getElementById("deviceB").innerText =
+                "Device：状态恢复完成";
+
+
+            document.getElementById("ramState").innerText =
+                "RAM 迁移完成";
+
+
+            document.getElementById("diskState").innerText =
+                "磁盘同步完成";
+
+
+            document.getElementById("cpuState").innerText =
+                "B 已恢复 CPU / Device";
+
+
+            startCounterB();
+        }
+
+
+        /*
+        ========================================
+        阶段 7：网络切换完成
+        ========================================
+        */
+
+        if (index === 7) {
+
+            document.getElementById("vmA").className =
+                "vm off";
+
+
+            document
+                .getElementById("hostA")
+                .classList.remove("active");
+
+
+            document.getElementById("hostAStatus").innerText =
+                "状态：源端 VM 已停止运行";
+
+
+            document.getElementById("counterA").innerText =
+                "已停止";
+
+
+            document.getElementById("nicB").innerText =
+                "NIC：IP / MAC 保持，B 接管网络";
+
+
+            document.getElementById("networkState").innerText =
+                "当前出口：服务器 B";
+
+
+            document.getElementById("switchText").innerText =
+                "✓ Server B 已正式接管";
+
+
+            document.getElementById("packet").innerText =
+                "✓ Migration Completed";
+
+
+            document
+                .getElementById("arrow")
+                .classList.remove("active");
+
+
+            for (let i = 0; i < stages.length; i++) {
+
+                document.getElementById("s" + i).className =
+                    "step done";
+            }
+        }
+    }
+
+
+    /*
+    ============================================
+    下一阶段按钮
+    ============================================
+    */
+
+    function nextStage() {
+
+        if (running) {
+            return;
+        }
+
+        if (currentStage < stages.length - 1) {
+
+            showStage(currentStage + 1);
+        }
+    }
+
+
+    /*
+    ============================================
+    自动演示
+    ============================================
+    */
+
+    function sleep(ms) {
+
+        return new Promise(function (resolve) {
+
+            setTimeout(resolve, ms);
+
+        });
+    }
+
+
+    async function startMigration() {
+
+        if (running) {
+            return;
+        }
+
+        running = true;
+
+
+        for (let i = 0; i < stages.length; i++) {
+
+            showStage(i);
+
+            /*
+            Stop-and-Copy 时间故意稍微短一点，
+            用于表示真正暂停时间比整个迁移时间短。
+            */
+
+            if (i === 4) {
+
+                await sleep(1600);
+
+            } else {
+
+                await sleep(2800);
+            }
+        }
+
+
+        running = false;
+    }
+
+
+    /*
+    ============================================
+    重置
+    ============================================
+    */
+
+    function resetDemo() {
+
+        if (counterTimer) {
+            clearInterval(counterTimer);
+        }
+
+        location.reload();
+    }
+
+</script>
+
+</body>
+</html>
