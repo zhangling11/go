@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QEMU/KVM 原生 TLS 安全热迁移演示</title>
+<style>
+:root{--bg:#f4f7fb;--card:#fff;--text:#172033;--muted:#687386;--line:#dfe5ee;--blue:#2563eb;--blue2:#dbeafe;--green:#059669;--green2:#d1fae5;--orange:#d97706;--shadow:0 8px 28px rgba(20,35,60,.07)}
+*{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Arial,sans-serif;background:var(--bg);color:var(--text)}
+.wrap{max-width:1280px;margin:auto;padding:28px}.header{display:flex;justify-content:space-between;gap:20px;align-items:center;margin-bottom:20px}
+h1{font-size:27px;margin:0 0 7px}.sub{color:var(--muted);font-size:14px}.badge{padding:8px 15px;border-radius:999px;background:#fff7ed;color:#c2410c;font-weight:700;font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:15px;box-shadow:var(--shadow)}
+.control{padding:18px 20px;margin-bottom:18px}.label{font-weight:700;margin-bottom:13px}.flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.node{padding:9px 14px;background:#f8fafc;border:1px solid var(--line);border-radius:9px;font-size:14px}.node.on{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8;font-weight:700}
+.main{display:grid;grid-template-columns:1fr 1.45fr 1fr;gap:18px}.host{padding:22px}.eyebrow{font-size:12px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+.vm{width:62px;height:62px;border-radius:15px;display:flex;align-items:center;justify-content:center;background:var(--blue2);color:#1d4ed8;font-weight:800;margin:17px 0}
+.vm.target{background:var(--green2);color:#047857}.host h2{margin:0 0 18px;font-size:20px}.row{display:flex;justify-content:space-between;gap:10px;border-top:1px solid #eef2f7;padding:12px 0;font-size:13px}.row span{color:var(--muted)}.row strong{text-align:right}
+.channel{padding:22px}.channel h2{text-align:center;margin:0 0 16px;font-size:17px}.security{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.sec{display:flex;gap:9px;padding:11px;border:1px solid var(--line);border-radius:10px;background:#fafbfc;opacity:.48;transition:.3s}.sec.done{opacity:1;background:#ecfdf5;border-color:#a7f3d0}
+.dot{min-width:27px;height:27px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#e5e7eb;font-size:12px;font-weight:800}.sec.done .dot{background:var(--green);color:#fff}.sec b{font-size:13px}.sec p{font-size:11px;color:var(--muted);margin:3px 0 0}
+.pipe{height:5px;background:#dbeafe;border-radius:20px;margin:38px 8px 20px;position:relative}.packet{position:absolute;top:-17px;left:0;font-size:25px}.packet.move{animation:move 2.1s linear infinite}@keyframes move{from{left:0}to{left:calc(100% - 28px)}}.channel-state{text-align:center;color:var(--blue);font-weight:700;font-size:13px}
+.step{padding:21px;margin-top:18px}.step-top{display:flex;justify-content:space-between;gap:12px}.small{font-size:12px;color:var(--muted)}#stepTitle{font-size:20px;margin:6px 0 8px}.desc{color:#4b5563;line-height:1.65;font-size:14px;min-height:46px}
+.payload{display:none;background:#f1f5f9;padding:11px 13px;border-radius:9px;font-size:13px;margin-top:12px}.progress-top{display:flex;justify-content:space-between;font-size:13px;margin-top:18px}.progress{height:9px;background:#e5e7eb;border-radius:20px;overflow:hidden;margin-top:7px}.bar{height:100%;width:0;background:linear-gradient(90deg,#60a5fa,#2563eb);transition:.5s}
+.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:18px}.summary .card{padding:17px;display:flex;gap:12px;align-items:center}.ico{font-size:25px}.summary h3{margin:0;font-size:15px}.summary p{margin:4px 0 2px;color:var(--blue);font-size:12px;font-weight:700}.summary span{font-size:11px;color:var(--muted)}
+.actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;flex-wrap:wrap}button{border-radius:9px;padding:11px 18px;font-size:14px;cursor:pointer;border:1px solid #cfd7e3;background:#fff;color:var(--text)}button.primary{background:var(--blue);color:#fff;border-color:var(--blue);font-weight:700}button:disabled{opacity:.5;cursor:not-allowed}
+.note{margin-top:16px;color:var(--muted);font-size:12px;line-height:1.6}
+@media(max-width:850px){.main,.summary{grid-template-columns:1fr}.security{grid-template-columns:1fr}.wrap{padding:16px}.header{align-items:flex-start;flex-direction:column}}
+@media(prefers-reduced-motion:reduce){.packet.move{animation:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div><h1>虚拟机原生安全热迁移</h1><div class="sub">QEMU / KVM Native TLS Live Migration · 浏览器演示</div></div>
+    <div class="badge" id="badge">等待开始</div>
+  </div>
+
+  <div class="card control">
+    <div class="label">控制面</div>
+    <div class="flow">
+      <div class="node">用户 / 管理平台</div><b>→</b><div class="node">virsh</div><b>→</b><div class="node">libvirt</div><b>→</b><div class="node on">QEMU Migration</div>
+    </div>
+    <div class="note">libvirt 负责发起和协调迁移；虚拟机 RAM、CPU 与设备状态由 QEMU 的迁移机制传输。</div>
+  </div>
+
+  <div class="main">
+    <div class="card host">
+      <div class="eyebrow">Source Host</div><div class="vm">VM</div><h2>源虚拟机</h2>
+      <div class="row"><span>迁移端</span><strong>Source QEMU</strong></div>
+      <div class="row"><span>VM 状态</span><strong id="sourceState">运行中</strong></div>
+      <div class="row"><span>TLS Credentials</span><strong id="sourceTLS">未加载</strong></div>
+    </div>
+
+    <div class="card channel">
+      <h2>TLS Migration Channel</h2>
+      <div class="security">
+        <div class="sec" id="cert"><div class="dot">1</div><div><b>X.509 身份认证</b><p>验证迁移对端身份</p></div></div>
+        <div class="sec" id="key"><div class="dot">2</div><div><b>TLS 密钥协商</b><p>建立会话密钥</p></div></div>
+        <div class="sec" id="enc"><div class="dot">3</div><div><b>数据加密</b><p>保护 Migration Stream</p></div></div>
+        <div class="sec" id="integ"><div class="dot">4</div><div><b>完整性保护</b><p>检测传输数据篡改</p></div></div>
+      </div>
+      <div class="pipe"><div class="packet" id="packet">🔒</div></div>
+      <div class="channel-state" id="channelState">等待建立安全连接</div>
+    </div>
+
+    <div class="card host">
+      <div class="eyebrow">Destination Host</div><div class="vm target">VM</div><h2>目标虚拟机</h2>
+      <div class="row"><span>迁移端</span><strong>Destination QEMU</strong></div>
+      <div class="row"><span>VM 状态</span><strong id="targetState">等待迁移</strong></div>
+      <div class="row"><span>TLS Credentials</span><strong id="targetTLS">未加载</strong></div>
+    </div>
+  </div>
+
+  <div class="card step">
+    <div class="step-top"><div><div class="small">当前阶段</div><h2 id="stepTitle">等待开始安全热迁移</h2></div><div class="small" id="counter">0 / 9</div></div>
+    <div class="desc" id="desc">点击“开始演示”，查看原生 TLS 安全热迁移从证书加载、TLS 握手到虚拟机恢复的完整过程。</div>
+    <div class="payload" id="payload">当前传输：<strong id="payloadText"></strong></div>
+    <div class="progress-top"><span>演示进度</span><strong id="progressText">0%</strong></div>
+    <div class="progress"><div class="bar" id="bar"></div></div>
+  </div>
+
+  <div class="summary">
+    <div class="card"><div class="ico">🔐</div><div><h3>身份认证</h3><p>X.509 Certificate</p><span>确认迁移对端身份</span></div></div>
+    <div class="card"><div class="ico">🔒</div><div><h3>机密性</h3><p>TLS Encryption</p><span>保护迁移数据不被窃听</span></div></div>
+    <div class="card"><div class="ico">✓</div><div><h3>完整性</h3><p>TLS Record Protection</p><span>保护传输数据不被篡改</span></div></div>
+  </div>
+
+  <div class="actions">
+    <button id="reset">重新演示</button>
+    <button id="auto">自动演示</button>
+    <button class="primary" id="next">开始演示</button>
+  </div>
+  <div class="note">说明：本页面用于展示安全迁移机制，不会连接真实 QEMU、libvirt 或执行虚拟机迁移。</div>
+</div>
+
+<script>
+(function(){
+const steps=[
+{t:"加载 TLS 凭据",d:"源端和目标端 QEMU 加载 TLS Credentials 与 X.509 证书，为安全迁移连接建立做准备。",p:6,x:"",s:0},
+{t:"TLS Handshake",d:"源 QEMU 与目标 QEMU 开始 TLS 握手，交换协议版本、密码套件以及建立安全连接所需的信息。",p:14,x:"TLS Handshake Messages",s:0},
+{t:"X.509 身份认证",d:"验证证书信任链、证书有效性和对端身份，降低连接到未授权或伪造迁移节点的风险。",p:22,x:"X.509 Certificate",s:1},
+{t:"密钥与密码套件协商",d:"TLS 完成密码套件与密钥材料协商，得到后续保护大量迁移数据所需的会话密钥。",p:30,x:"TLS Session Keys",s:2},
+{t:"建立 TLS 安全迁移通道",d:"认证和密钥协商完成。QEMU Migration Stream 开始通过具有机密性和完整性保护的 TLS 通道传输。",p:38,x:"Encrypted Migration Channel",s:4},
+{t:"内存预拷贝",d:"源虚拟机继续运行。QEMU 将 RAM Pages 发送到目标端，迁移流通过 TLS 加密并受到完整性保护。",p:62,x:"RAM Pages",s:4},
+{t:"脏页迭代迁移",d:"源虚拟机运行期间产生新的 Dirty Pages，QEMU 持续通过安全通道将这些脏页同步到目标端。",p:79,x:"Dirty Memory Pages",s:4},
+{t:"Stop-and-Copy",d:"源虚拟机短暂停止，最后的内存页、CPU 寄存器和设备状态继续通过 TLS 安全通道发送。",p:94,x:"Final RAM + CPU State + Device State",s:4},
+{t:"目标虚拟机恢复",d:"目标 QEMU 完成最终状态恢复并启动虚拟机，原生 TLS 安全热迁移完成。",p:100,x:"Migration Complete",s:4}
+];
+let i=-1,timer=null;
+const $=id=>document.getElementById(id);
+function secure(n){["cert","key","enc","integ"].forEach((id,j)=>{const e=$(id);e.classList.toggle("done",j<n);e.querySelector(".dot").textContent=j<n?"✓":j+1;});}
+function render(){
+ if(i<0)return;
+ const s=steps[i]; $("stepTitle").textContent=s.t;$("desc").textContent=s.d;$("counter").textContent=(i+1)+" / "+steps.length;$("progressText").textContent=s.p+"%";$("bar").style.width=s.p+"%";
+ $("sourceTLS").textContent="已加载";$("targetTLS").textContent="已加载";secure(s.s);
+ $("payload").style.display=s.x?"block":"none";$("payloadText").textContent=s.x;
+ if(i<1)$("channelState").textContent="准备 TLS 握手";else if(i<4)$("channelState").textContent="TLS 安全连接建立中";else if(i===8)$("channelState").textContent="✓ 安全迁移完成";else $("channelState").textContent="🔒 TLS 安全通道已建立";
+ $("packet").classList.toggle("move",i>=4&&i<8);
+ $("sourceState").textContent=i===7?"已暂停":i===8?"迁移完成":"运行中";
+ $("targetState").textContent=i<5?"等待迁移":i<8?"正在恢复状态":"运行中";
+ $("badge").textContent=i===8?"✓ 迁移完成":"迁移中 · "+(i+1)+"/9";
+ $("next").textContent=i===8?"迁移完成":"下一步";$("next").disabled=i===8;
+}
+function next(){if(i<steps.length-1){i++;render()}if(i===steps.length-1)stop()}
+function stop(){if(timer){clearInterval(timer);timer=null}$("auto").textContent="自动演示"}
+function reset(){stop();i=-1;$("stepTitle").textContent="等待开始安全热迁移";$("desc").textContent="点击“开始演示”，查看原生 TLS 安全热迁移从证书加载、TLS 握手到虚拟机恢复的完整过程。";$("counter").textContent="0 / 9";$("progressText").textContent="0%";$("bar").style.width="0";$("sourceTLS").textContent="未加载";$("targetTLS").textContent="未加载";$("sourceState").textContent="运行中";$("targetState").textContent="等待迁移";$("channelState").textContent="等待建立安全连接";$("packet").classList.remove("move");$("payload").style.display="none";$("badge").textContent="等待开始";$("next").textContent="开始演示";$("next").disabled=false;secure(0)}
+$("next").addEventListener("click",next);$("reset").addEventListener("click",reset);$("auto").addEventListener("click",function(){if(timer){stop();return}if(i===8)reset();$("auto").textContent="暂停演示";next();timer=setInterval(()=>{if(i>=8)stop();else next()},2300)});
+})();
+</script>
+</body>
+</html>
