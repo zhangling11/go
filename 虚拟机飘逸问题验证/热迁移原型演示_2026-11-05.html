@@ -1,0 +1,1339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>虚拟机热迁移 原型演示</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/element-plus@2.4.4/dist/index.css">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #f5f7fa;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: #303133;
+  }
+  .demo-banner {
+    background: #ecf5ff;
+    border-bottom: 1px solid #d9ecff;
+    color: #409eff;
+    font-size: 13px;
+    padding: 8px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .demo-banner .demo-banner-tip { color: #909399; }
+  .page { padding: 16px 20px 40px; max-width: 1280px; margin: 0 auto; }
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .page-title { font-size: 16px; font-weight: 600; }
+  .page-sub { font-size: 12px; color: #909399; margin-left: 10px; font-weight: 400; }
+  .panel {
+    background: #fff;
+    border-radius: 4px;
+    padding: 16px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .06);
+  }
+
+  /* 右键菜单 */
+  .ctx-menu {
+    position: fixed;
+    z-index: 3000;
+    min-width: 168px;
+    background: #fff;
+    border: 1px solid #e4e7ed;
+    border-radius: 4px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, .12);
+    padding: 4px 0;
+    font-size: 13px;
+    user-select: none;
+  }
+  .ctx-item {
+    display: flex;
+    align-items: center;
+    padding: 7px 14px;
+    cursor: pointer;
+    color: #303133;
+  }
+  .ctx-item:hover { background: #ecf5ff; color: #409eff; }
+  .ctx-item.is-danger { color: #f56c6c; }
+  .ctx-item.is-danger:hover { background: #fef0f0; color: #f56c6c; }
+  .ctx-item.is-new { color: #409eff; font-weight: 600; }
+  .ctx-item.is-new:hover { background: #ecf5ff; }
+  .ctx-item.is-disabled { color: #c0c4cc; cursor: not-allowed; }
+  .ctx-item.is-disabled:hover { background: #fff; color: #c0c4cc; }
+  .ctx-item .ctx-icon { margin-right: 8px; font-size: 13px; width: 14px; display: inline-block; }
+  .ctx-divider { height: 1px; background: #e4e7ed; margin: 4px 0; }
+  .ctx-badge {
+    margin-left: auto;
+    font-size: 11px;
+    color: #fff;
+    background: #409eff;
+    border-radius: 8px;
+    padding: 0 6px;
+    line-height: 15px;
+  }
+
+  /* 弹窗内部 */
+  .info-bar {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    background: #f5f7fa;
+    border-radius: 4px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    flex-wrap: wrap;
+  }
+  .info-bar .info-name { font-weight: 600; font-size: 14px; }
+  .info-bar .info-item { color: #606266; }
+  .info-bar .info-item b { color: #303133; font-weight: 500; }
+  .form-tip { color: #909399; font-size: 12px; margin-left: 8px; line-height: 1.5; }
+  .form-tip.is-block { display: block; margin-left: 0; margin-top: 2px; }
+  .target-row { display: flex; gap: 8px; width: 100%; }
+  .cand-wrap { margin: -4px 0 14px 110px; }
+  .cand-head { font-size: 12px; color: #909399; margin-bottom: 6px; }
+  .cand-list { display: flex; flex-direction: column; gap: 8px; }
+  .cand-card {
+    border: 1px solid #e4e7ed; border-radius: 4px; padding: 10px 12px; background: #fff;
+  }
+  .cand-card.is-picked { border-color: #67c23a; background: #f0f9eb; }
+  .cand-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .cand-node { font-size: 15px; font-weight: 600; color: #303133; }
+  .cand-pools { margin-left: auto; display: flex; gap: 4px; flex-wrap: wrap; }
+  .cand-pool {
+    font-size: 11px; color: #606266; background: #f5f7fa;
+    border-radius: 3px; padding: 1px 6px; line-height: 17px;
+  }
+  .cand-card.is-picked .cand-pool { background: #e1f3d8; }
+  .cand-line { font-size: 12px; color: #606266; line-height: 1.8; margin-bottom: 2px; display: flex; }
+  .cand-k { color: #909399; flex: 0 0 76px; white-space: nowrap; }
+  .cand-v { flex: 1; }
+  .cand-card .el-button { margin-top: 8px; }
+  .intent-tip {
+    margin: -6px 0 14px 110px;
+    font-size: 12px;
+    color: #409eff;
+    background: #ecf5ff;
+    border-radius: 3px;
+    padding: 6px 10px;
+    line-height: 1.6;
+  }
+  .precheck-card { margin-top: 4px; border: 1px solid #e4e7ed; border-radius: 4px; }
+  .precheck-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid #e4e7ed; font-size: 13px; font-weight: 600;
+  }
+  .check-row {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 8px 14px; font-size: 13px; border-bottom: 1px dashed #f0f2f5;
+  }
+  .check-row:last-child { border-bottom: none; }
+  .check-dot {
+    width: 16px; height: 16px; border-radius: 50%; flex: 0 0 16px; margin-top: 2px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; color: #fff; line-height: 1;
+  }
+  .check-dot.pass { background: #67c23a; }
+  .check-dot.warn { background: #e6a23c; }
+  .check-dot.block { background: #f56c6c; }
+  .check-name { width: 100px; flex: 0 0 100px; color: #303133; }
+  .check-detail { color: #606266; line-height: 1.55; flex: 1; }
+  .check-hint {
+    padding: 8px 14px; font-size: 12px; color: #909399;
+    background: #fafafa; border-top: 1px dashed #f0f2f5; line-height: 1.6;
+  }
+  .recommend-card {
+    margin: 12px 14px 14px; border: 1px solid #b3d8ff; background: #ecf5ff;
+    border-radius: 4px; padding: 12px 14px;
+  }
+  .recommend-title { font-size: 12px; color: #606266; margin-bottom: 6px; }
+  .recommend-node { font-size: 18px; font-weight: 600; color: #409eff; margin-bottom: 8px; }
+  .recommend-reason { font-size: 12px; color: #606266; line-height: 1.9; }
+  .recommend-reason .r-dot { color: #409eff; margin-right: 6px; }
+
+  /* 进度弹窗 */
+  .progress-stage-tip { font-size: 12px; color: #909399; text-align: center; margin: 10px 0 18px; min-height: 17px; }
+  .stat-grid { display: flex; gap: 10px; margin-top: 16px; }
+  .stat-item { flex: 1; background: #f5f7fa; border-radius: 4px; padding: 10px 12px; text-align: center; }
+  .stat-label { font-size: 12px; color: #909399; margin-bottom: 4px; }
+  .stat-value { font-size: 15px; font-weight: 600; color: #303133; }
+  .risk-bar {
+    display: flex; align-items: flex-start; gap: 10px;
+    background: #fdf6ec; border: 1px solid #faecd8; border-radius: 4px;
+    padding: 10px 12px; margin-top: 14px; font-size: 12px; color: #b88230;
+  }
+  .risk-bar .risk-icon { font-size: 14px; line-height: 1.5; }
+  .risk-bar .risk-text { flex: 1; line-height: 1.7; }
+  .risk-bar .risk-actions { display: flex; gap: 6px; align-items: center; }
+  .switch-tip {
+    margin-top: 12px; background: #ecf5ff; border: 1px solid #d9ecff; border-radius: 4px;
+    padding: 9px 12px; font-size: 12px; color: #409eff; line-height: 1.6;
+  }
+  .result-card { text-align: center; padding: 6px 0 4px; }
+  .result-icon {
+    width: 46px; height: 46px; border-radius: 50%; background: #67c23a; color: #fff;
+    font-size: 26px; line-height: 46px; margin: 8px auto 0;
+  }
+  .result-title { font-size: 16px; font-weight: 600; color: #67c23a; margin: 10px 0 4px; }
+  .result-sub { font-size: 12px; color: #909399; margin-bottom: 16px; }
+  .verify-list { display: flex; flex-wrap: wrap; gap: 10px; text-align: left; }
+  .verify-item { flex: 1 1 calc(33.333% - 7px); min-width: 172px; border: 1px solid #e1f3d8; background: #f0f9eb; border-radius: 4px; padding: 10px 12px; }
+  .verify-item.is-warn { border-color: #faecd8; background: #fdf6ec; }
+  .verify-item.is-warn .verify-value { color: #b88230; }
+  .blocked-panel {
+    margin: 12px 14px 14px; border: 1px solid #fbc4c4; background: #fef0f0;
+    border-radius: 4px; padding: 12px 14px;
+  }
+  .blocked-panel.recom-fail { margin: -4px 0 14px 110px; }
+  .blocked-title { font-size: 14px; font-weight: 600; color: #f56c6c; margin-bottom: 8px; }
+  .blocked-row { font-size: 12px; color: #606266; line-height: 1.95; }
+  .blocked-row .b-node { display: inline-block; width: 68px; color: #303133; font-weight: 600; }
+  .blocked-row .b-reason { color: #f56c6c; }
+  .blocked-suggest { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #fbc4c4; font-size: 12px; color: #909399; line-height: 1.9; }
+  .verify-label { font-size: 12px; color: #909399; margin-bottom: 4px; }
+  .verify-value { font-size: 13px; color: #529b2e; font-weight: 600; }
+
+  /* 源端处置行（R17） */
+  .src-row {
+    margin-top: 10px; border: 1px solid #e1f3d8; background: #f0f9eb;
+    border-radius: 4px; padding: 10px 12px; text-align: left;
+  }
+  .src-row.is-warn { border-color: #faecd8; background: #fdf6ec; }
+  .src-row.is-fail { border-color: #fbc4c4; background: #fef0f0; }
+  .src-row-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #909399; margin-bottom: 5px; }
+  .src-row-main { font-size: 13px; font-weight: 600; color: #529b2e; }
+  .src-row.is-warn .src-row-main { color: #b88230; }
+  .src-row.is-fail .src-row-main { color: #f56c6c; }
+  .src-row .src-count { font-variant-numeric: tabular-nums; }
+  .src-row-tip { font-size: 12px; color: #909399; line-height: 1.7; margin-top: 5px; }
+  .src-row-actions { margin-top: 8px; }
+
+  /* 列表行「源端未清」角标 */
+  .src-badge {
+    display: inline-block; margin-left: 6px; font-size: 11px; line-height: 16px;
+    padding: 0 6px; border-radius: 8px; background: #fdf6ec; color: #b88230;
+    border: 1px solid #faecd8; cursor: help; vertical-align: middle;
+  }
+
+  /* 源端副本管理小弹窗 */
+  .srcmgr-line { font-size: 13px; color: #606266; line-height: 2; }
+  .srcmgr-line b { color: #303133; font-weight: 600; }
+  .srcmgr-count {
+    font-size: 22px; font-weight: 600; color: #b88230; font-variant-numeric: tabular-nums;
+    margin: 12px 0; text-align: center;
+  }
+  .srcmgr-warn {
+    margin-top: 12px; background: #fdf6ec; border: 1px solid #faecd8; border-radius: 4px;
+    padding: 10px 12px; font-size: 12px; color: #b88230; line-height: 1.7;
+  }
+  .cancel-done { text-align: center; padding: 24px 0 14px; }
+  .cancel-title { font-size: 16px; font-weight: 600; color: #67c23a; margin: 12px 0 6px; }
+  .cancel-sub { font-size: 12px; color: #909399; line-height: 1.9; }
+
+  .dialog-footer { display: flex; justify-content: flex-end; gap: 10px; }
+  .log-tip { font-size: 12px; color: #909399; margin-bottom: 12px; line-height: 1.6; }
+  .collapse-inner-pad { padding: 0 4px; }
+</style>
+</head>
+<body>
+
+<!-- 模板放在 x-template 中：浏览器不当 HTML 解析，自闭合标签与驼峰名称得以保留 -->
+<script type="text/x-template" id="app-tpl">
+  <div>
+    <!-- 顶部说明条 -->
+    <div class="demo-banner">
+      <span>热迁移功能原型演示 · 假数据，不对接后端</span>
+      <span class="demo-banner-tip">对齐平台现有交互范式（列表右键 → 弹窗配置）· 快捷演示：?demo=main / recommend / precheck / blocked / netfail / progress / cancel / portchanged / srcret（黄项保留期） / srcmgr（列表入口） / logs</span>
+    </div>
+
+    <!-- VSM 列表页（模拟现有 vm-manage） -->
+    <div class="page">
+      <div class="page-header">
+        <div>
+          <span class="page-title">虚拟机管理</span>
+          <span class="page-sub">在任意一行上右键，选择「热迁移」开始演示</span>
+        </div>
+      </div>
+      <div class="panel" @contextmenu.prevent>
+        <el-table :data="vsms" border style="width: 100%" @row-contextmenu="openCtxMenu">
+          <el-table-column prop="name" label="名称" width="190">
+            <template #default="s">
+              <span>{{ s.row.name }}</span>
+              <span
+                v-if="s.row.srcRetain"
+                class="src-badge"
+                :title="'源端副本保留至 ' + s.row.srcRetain.untilText"
+              >源端未清</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="110">
+            <template #default="s">
+              <el-tag :type="s.row.status === 'running' ? 'success' : 'info'" size="small">{{ s.row.status === 'running' ? '运行中' : '已关机' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="node" label="所在节点" width="120"></el-table-column>
+          <el-table-column prop="spec" label="规格" width="110"></el-table-column>
+          <el-table-column prop="ip" label="IP 地址" width="160"></el-table-column>
+          <el-table-column prop="remark" label="备注" min-width="200" show-overflow-tooltip></el-table-column>
+        </el-table>
+      </div>
+    </div>
+
+    <!-- 右键菜单 -->
+    <div v-if="ctxVisible" class="ctx-menu" :style="{ left: ctxX + 'px', top: ctxY + 'px' }" @mousedown.stop @contextmenu.prevent>
+      <div class="ctx-item" @click="pickCtx('console')"><span class="ctx-icon">▣</span>控制台</div>
+      <div class="ctx-item" @click="pickCtx('snapshot')"><span class="ctx-icon">◎</span>拍摄快照</div>
+      <div class="ctx-item" @click="pickCtx('net')"><span class="ctx-icon">⇄</span>网络配置</div>
+      <div class="ctx-divider"></div>
+      <div class="ctx-item" @click="pickCtx('edit')"><span class="ctx-icon">⚙</span>编辑配置</div>
+      <div class="ctx-item" @click="pickCtx('clone')"><span class="ctx-icon">⧉</span>克隆</div>
+      <div class="ctx-item is-new" @click="pickCtx('migrate')"><span class="ctx-icon">→</span>热迁移<span class="ctx-badge">新增</span></div>
+      <div v-if="ctxRow.srcRetain" class="ctx-item is-new" @click="pickCtx('srcmgr')"><span class="ctx-icon">⌫</span>源端副本管理<span class="ctx-badge">新增</span></div>
+      <div class="ctx-divider"></div>
+      <div class="ctx-item" @click="pickCtx('reset')"><span class="ctx-icon">↻</span>强制重置</div>
+      <div class="ctx-item" @click="pickCtx('poweroff')"><span class="ctx-icon">⏻</span>强制断电</div>
+      <div class="ctx-item is-danger" @click="pickCtx('delete')"><span class="ctx-icon">✕</span>删除虚拟机</div>
+    </div>
+
+    <!-- ===== 热迁移主弹窗 ===== -->
+    <el-dialog v-model="mainVisible" title="热迁移" width="680px" :close-on-click-modal="false">
+      <!-- VSM 只读信息条：右键已选定，不可改 -->
+      <div class="info-bar">
+        <span class="info-name">{{ ctxRow.name }}</span>
+        <el-tag :type="ctxRow.status === 'running' ? 'success' : 'info'" size="small">{{ ctxRow.status === 'running' ? '运行中' : '已关机' }}</el-tag>
+        <span class="info-item">所在节点 <b>{{ ctxRow.node }}</b></span>
+        <span class="info-item">规格 <b>{{ ctxRow.spec }}</b></span>
+        <span class="info-item">IP <b>{{ ctxRow.ip }}</b></span>
+        <span class="info-item">磁盘总量 <b>{{ ctxRow.disk }} GiB</b></span>
+      </div>
+
+      <el-form :model="form" label-width="110px">
+        <el-form-item label="迁移意图">
+          <el-radio-group v-model="form.intent" @change="onIntentChange">
+            <el-radio label="">未选择</el-radio>
+            <el-radio v-for="it in intents" :key="it.value" :label="it.value">{{ it.label }}</el-radio>
+          </el-radio-group>
+          <span class="form-tip is-block">声明意图后点【系统推荐】可得到多个候选节点；保持「未选择」则按综合可用性排序，也可直接手选目标节点</span>
+        </el-form-item>
+        <div v-if="intentTip" class="intent-tip">{{ intentTip }}</div>
+
+        <el-form-item label="目标节点">
+          <div class="target-row">
+            <el-select v-model="form.target" placeholder="请选择目标节点" style="flex: 1" @change="onTargetChange">
+              <el-option v-for="n in nodes" :key="n.id" :label="n.label + (n.id === ctxRow.node ? '（当前所在节点）' : '')" :value="n.id" :disabled="n.id === ctxRow.node"></el-option>
+            </el-select>
+            <el-button :loading="recommending" @click="runRecommend">系统推荐</el-button>
+          </div>
+          <span class="form-tip is-block">声明意图后点【系统推荐】可得到多个候选节点；也可直接手选（兜底路径）</span>
+        </el-form-item>
+
+        <!-- 候选节点卡片：推荐结果，选定后才加载存储池 -->
+        <div v-if="candidates.length" class="cand-wrap">
+          <div class="cand-head">
+            系统推荐 {{ candidates.length }} 个候选节点（已通过硬过滤，按「{{ intentLabel }}」意图排序）
+          </div>
+          <div class="cand-list">
+            <div
+              v-for="c in candidates"
+              :key="c.node"
+              class="cand-card"
+              :class="{ 'is-picked': form.target === c.node }"
+            >
+              <div class="cand-top">
+                <span class="cand-node">{{ c.node }}</span>
+                <el-tag v-if="c.best" type="success" size="small">推荐首选</el-tag>
+                <div class="cand-pools">
+                  <span v-for="p in c.pools" :key="p.id" class="cand-pool">{{ p.label }} {{ p.available }}G</span>
+                </div>
+              </div>
+              <div class="cand-line"><span class="cand-k">资源</span><span class="cand-v">{{ c.resource }}</span></div>
+              <div class="cand-line"><span class="cand-k">网络落位</span><span class="cand-v">{{ c.network }}</span></div>
+              <div class="cand-line"><span class="cand-k">{{ intentLabel }}</span><span class="cand-v">{{ c.reason }}</span></div>
+              <el-button size="small" :type="form.target === c.node ? 'success' : 'primary'" plain @click="pickCandidate(c)">
+                {{ form.target === c.node ? '已选定' : '选此节点' }}
+              </el-button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 推荐失败面板：硬过滤后候选为空 -->
+        <div v-if="recommendBlocked" class="blocked-panel recom-fail">
+          <div class="blocked-title">✕ 无可用目标节点</div>
+          <div v-for="(b, i) in recommendBlocked.nodes" :key="i" class="blocked-row">
+            <span class="b-node">{{ b.node }}</span><span class="b-reason">{{ b.reason }}</span>
+          </div>
+          <div class="blocked-suggest">建议：{{ recommendBlocked.suggest }}</div>
+        </div>
+
+        <el-form-item label="迁移模式">
+          <el-radio-group v-model="form.mode" @change="onModeChange">
+            <el-radio label="live" :disabled="ctxRow.status !== 'running'">热迁移（运行态在线迁移）</el-radio>
+            <el-radio label="cold">冷迁移（关机态复制磁盘）</el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <el-form-item label="带宽限速">
+          <el-switch v-model="form.bwLimit"></el-switch>
+          <template v-if="form.bwLimit">
+            <el-input-number v-model="form.bwValue" :min="1" :max="2000" controls-position="right" style="margin-left: 12px"></el-input-number>
+            <span class="form-tip">MiB/s，防止迁移流量挤占业务网络</span>
+          </template>
+          <span v-else class="form-tip">不限速，迁移将尽可能占用可用带宽</span>
+        </el-form-item>
+
+        <el-form-item label="目标存储池" required>
+          <el-select v-model="form.pool" placeholder="请选择目标存储池" style="width: 100%" @change="onPoolChange">
+            <el-option
+              v-for="p in storagePools"
+              :key="p.id"
+              :label="p.label + '（可用 ' + p.available + ' GiB）'"
+              :value="p.id"
+            ></el-option>
+          </el-select>
+          <span class="form-tip is-block">非共享存储：磁盘需整盘复制至目标节点，故为必选项。磁盘总量 {{ ctxRow.disk }} GiB</span>
+        </el-form-item>
+
+        <el-collapse>
+          <el-collapse-item title="高级选项（CPU 节流）" name="adv">
+            <div class="collapse-inner-pad">
+              <el-form-item label="CPU 节流">
+                <el-switch v-model="form.cpuThrottle"></el-switch>
+                <el-input-number v-if="form.cpuThrottle" v-model="form.cpuThrottlePercent" :min="1" :max="99" controls-position="right" style="margin-left: 12px"></el-input-number>
+                <span class="form-tip">复制收敛变慢时限制迁移进程占用，默认 50%</span>
+              </el-form-item>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
+
+        <div class="form-tip is-block" style="margin: 2px 0 12px 110px">
+          目标交换机 / 安全组不设为选择项：它们是目标节点的本地资源，由系统按「同名 + 同 CIDR」自动匹配——推荐阶段用它判定候选是否合格，预检阶段再对已选节点复核，结果见预检报告的「网络落位」项；匹配失败即阻断。
+        </div>
+
+        <!-- 预检报告 -->
+        <div v-if="precheck" class="precheck-card">
+          <div class="precheck-head">
+            <span>预检结果</span>
+            <el-tag :type="precheck.allowed ? (precheck.hasWarn ? 'warning' : 'success') : 'danger'" size="small">
+              {{ !precheck.allowed ? '存在阻断项' : (precheck.hasWarn ? '通过，有警告' : '预检通过，可以迁移') }}
+            </el-tag>
+          </div>
+          <div v-for="(c, i) in precheck.checks" :key="i" class="check-row">
+            <span class="check-dot" :class="c.level">{{ c.level === 'pass' ? '✓' : (c.level === 'warn' ? '!' : '✕') }}</span>
+            <span class="check-name">{{ c.name }}</span>
+            <span class="check-detail">{{ c.detail }}</span>
+          </div>
+          <!-- 预检不产出推荐结论：节点由「系统推荐」在预检前选定 -->
+          <div class="check-hint">预检针对已选定的目标节点与存储池执行深度校验；如需换节点请回到上方重新推荐或手选。</div>
+        </div>
+      </el-form>
+
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="mainVisible = false">取消</el-button>
+          <el-button :loading="prechecking" :disabled="!form.pool" @click="runPrecheck">预检</el-button>
+          <el-button type="primary" :disabled="!canSubmit" @click="submitMigrate">提交迁移</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ===== 迁移进度弹窗 ===== -->
+    <el-dialog
+      v-model="progressVisible"
+      title="迁移进度"
+      width="660px"
+      :show-close="canCloseProgress"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+    >
+      <template v-if="!cancelled">
+        <el-steps :active="stageIndex" align-center finish-status="success">
+          <el-step title="预检完成"></el-step>
+          <el-step title="数据同步中"></el-step>
+          <el-step title="准备切换"></el-step>
+          <el-step title="切换完成"></el-step>
+          <el-step title="迁移成功"></el-step>
+        </el-steps>
+        <div class="progress-stage-tip">{{ stageTip }}</div>
+
+        <el-progress :percentage="progress" :status="progress === 100 ? 'success' : ''" :stroke-width="14"></el-progress>
+
+        <div class="stat-grid">
+          <div class="stat-item"><div class="stat-label">已同步</div><div class="stat-value">{{ stat.synced }} GiB</div></div>
+          <div class="stat-item"><div class="stat-label">剩余</div><div class="stat-value">{{ stat.left }} GiB</div></div>
+          <div class="stat-item"><div class="stat-label">当前速率</div><div class="stat-value">{{ stat.speed }} MiB/s</div></div>
+          <div class="stat-item"><div class="stat-label">预计剩余</div><div class="stat-value">{{ stat.eta }}</div></div>
+        </div>
+
+        <!-- 风险告警条 -->
+        <div v-if="showRisk" class="risk-bar">
+          <span class="risk-icon">⚠</span>
+          <div class="risk-text">
+            检测到该 VSM 写入频繁，热迁移收敛变慢。建议启用 CPU 节流或降低限速，让业务优先。
+            <br>技术说明：脏页率 <b>{{ stat.dirtyRate }}%</b>，持续高于阈值可能导致迁移不收敛。
+          </div>
+          <div class="risk-actions">
+            <el-button size="small" type="warning" plain @click="adoptThrottle">启用节流</el-button>
+          </div>
+        </div>
+        <div v-if="throttleApplied" class="switch-tip">已启用 CPU 节流 50%，迁移收敛速度恢复</div>
+
+        <!-- 切换阶段提示（仅切换进行中显示） -->
+        <div v-if="stageIndex === 2" class="switch-tip">
+          即将进行源到目标切换，存在毫秒级业务瞬断，请勿在此期间对该 VSM 发起操作。
+        </div>
+
+        <!-- 结果验证 -->
+        <div v-if="progress === 100" class="result-card">
+          <div class="result-icon">✓</div>
+          <div class="result-title">迁移成功</div>
+          <div class="result-sub">VSM 已在 {{ finalTarget }} 正常运行，密码服务已恢复</div>
+          <div class="verify-list">
+            <div class="verify-item"><div class="verify-label">运行状态</div><div class="verify-value">运行中</div></div>
+            <div class="verify-item"><div class="verify-label">IP 地址</div><div class="verify-value">{{ ctxRow.ip }}（与迁移前一致）</div></div>
+            <div class="verify-item"><div class="verify-label">服务探活</div><div class="verify-value">通过</div></div>
+            <div class="verify-item"><div class="verify-label">磁盘落位</div><div class="verify-value">{{ form.pool || 'pool-ssd' }}：{{ diskPath }}（{{ ctxRow.disk }} GiB 核对一致）</div></div>
+            <div class="verify-item" :class="{ 'is-warn': portChanged }">
+              <div class="verify-label">对外端口</div>
+              <div class="verify-value" v-if="portChanged">端口号已变更 8443 → 18443，需业务方确认</div>
+              <div class="verify-value" v-else>端口转发已重建，端口号未变（8443）</div>
+            </div>
+          </div>
+
+          <!-- 源端处置（R17）：三档策略由验证结论自动决定 -->
+          <div
+            class="src-row"
+            :class="{ 'is-warn': srcRetainActive, 'is-fail': srcClearFailed }"
+            v-if="srcVisible"
+          >
+            <div class="src-row-head">
+              <span>源端处置</span>
+              <span>{{ ctxRow.node }}</span>
+            </div>
+            <!-- 档1：全绿 → 已清除 -->
+            <div v-if="!srcRetainActive && !srcClearFailed" class="src-row-main">源端副本已清除 ✓</div>
+            <div v-if="!srcRetainActive && !srcClearFailed" class="src-row-tip">
+              {{ ctxRow.node }} 上的磁盘文件已删除（清除方式：系统自动）。源端虚拟机定义与端口转发已同时注销。
+            </div>
+            <!-- 档2：黄项 → 保留期倒计时 -->
+            <template v-if="srcRetainActive">
+              <div class="src-row-main">
+                源端副本保留中　剩余 <span class="src-count">{{ srcCountdownText }}</span>
+              </div>
+              <div class="src-row-tip">
+                因本次迁移存在待确认项，源端副本将保留 24 小时后自动清除。确认业务已恢复后可立即清除。
+              </div>
+              <div class="src-row-actions">
+                <el-button size="small" type="danger" plain @click="clearSourceCopy('progress')">立即清除源端副本</el-button>
+              </div>
+            </template>
+            <!-- 档3：清除失败 -->
+            <template v-if="srcClearFailed">
+              <div class="src-row-main">源端副本清除失败 ✕　需人工处理</div>
+              <div class="src-row-tip">
+                文件可能被占用或权限不足，请登录 {{ ctxRow.node }} 手工处理。
+              </div>
+              <div class="src-row-actions">
+                <el-button size="small" type="danger" plain @click="retryClearSource">重试清除</el-button>
+                <el-button size="small" @click="viewLogs">查看源端状态</el-button>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- 取消完成态 -->
+      <div v-else class="cancel-done">
+        <div class="result-icon">✓</div>
+        <div class="cancel-title">取消完成</div>
+        <div class="cancel-sub">
+          VSM {{ ctxRow.name }} 运行状态正常，仍位于源节点 {{ ctxRow.node }}<br>
+          目标端临时磁盘数据已清理，不会影响下次迁移
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button
+            v-if="!cancelled && progress < 100"
+            type="danger"
+            plain
+            :disabled="!canCancel || cancelling"
+            :loading="cancelling"
+            @click="cancelMigrate"
+          >{{ cancelling ? '正在安全取消…' : (!canCancel ? '切换阶段不可取消' : '取消迁移') }}</el-button>
+          <el-button v-if="progress === 100 && !cancelled" @click="viewLogs">查看操作日志</el-button>
+          <el-button v-if="canCloseProgress" type="primary" @click="progressVisible = false">关闭</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ===== 源端副本管理（R17：保留期内从列表页进入的唯一入口） ===== -->
+    <el-dialog v-model="srcmgrVisible" title="源端副本管理" width="560px">
+      <template v-if="!srcmgrCleared">
+        <div class="srcmgr-line">
+          VSM：<b>{{ srcmgrVsm.name }}</b>　源节点：<b>{{ srcmgrVsm.node }}</b>
+        </div>
+        <div class="srcmgr-line">
+          磁盘文件：<b>{{ diskPath }}</b>（<b>{{ srcmgrVsm.disk }} GiB</b>）
+        </div>
+        <div class="srcmgr-count">剩余 {{ srcCountdownText }}</div>
+        <div class="srcmgr-line" style="text-align:center;color:#909399;font-size:12px">
+          到期时间 <b>{{ srcRetainUntilText }}</b>，到期后系统自动清除
+        </div>
+        <div class="srcmgr-warn">
+          本次迁移存在待确认项（对外端口已变更），因此源端副本进入保留期。确认业务已恢复后，可立即清除以释放源节点磁盘空间。
+        </div>
+      </template>
+      <template v-else>
+        <div class="cancel-done">
+          <div class="result-icon">✓</div>
+          <div class="cancel-title">源端副本已清除</div>
+          <div class="cancel-sub">
+            {{ srcmgrVsm.node }} 上的磁盘文件已永久删除<br>
+            源节点磁盘空间已释放
+          </div>
+        </div>
+      </template>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="srcmgrVisible = false">关闭</el-button>
+          <el-button v-if="!srcmgrCleared" type="danger" @click="clearSourceCopy('list')">立即清除源端副本</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ===== 日志中心（现有页面，仅作跳转说明） ===== -->
+    <el-dialog v-model="logVisible" title="日志中心 → 操作日志" width="1000px">
+      <div class="log-tip">
+        本页为平台现有「日志中心 → 操作日志」标签（<b>非本次原型新增</b>）。迁移动作以 模块=跨节点迁移 写入，与其他操作记录同屏可审计。
+      </div>
+      <el-table :data="logs" border size="small" style="width: 100%">
+        <el-table-column prop="time" label="时间" width="145"></el-table-column>
+        <el-table-column prop="user" label="操作人" width="72"></el-table-column>
+        <el-table-column prop="module" label="模块" width="100"></el-table-column>
+        <el-table-column prop="action" label="动作" width="88"></el-table-column>
+        <el-table-column prop="target" label="对象" min-width="170" show-overflow-tooltip></el-table-column>
+        <el-table-column label="结果" width="68" align="center">
+          <template #default="s">
+            <el-tag :type="s.row.result === 'success' ? 'success' : 'danger'" size="small">{{ s.row.resultText }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="reason" label="原因" min-width="180" show-overflow-tooltip></el-table-column>
+      </el-table>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button type="primary" @click="logVisible = false">关闭</el-button>
+        </div>
+      </template>
+    </el-dialog>
+  </div>
+</script>
+
+<div id="app"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/element-plus@2.4.4/dist/index.full.min.js"></script>
+<script>
+  const { createApp } = Vue;
+
+  createApp({
+    template: '#app-tpl',
+    data() {
+      return {
+        // ===== 假数据 =====
+        vsms: [
+          { name: 'vsm-caiwu-01', status: 'running',  node: 'node-01', spec: '4C8G',  ip: '192.168.10.25', disk: 60, remark: '财务密码服务（生产）' },
+          { name: 'vsm-yewu-02',  status: 'running',  node: 'node-02', spec: '8C16G', ip: '192.168.10.31', disk: 120, remark: '业务加密服务（生产）' },
+          { name: 'vsm-test-03',  status: 'shut off', node: 'node-01', spec: '2C4G',  ip: '-',             disk: 20, remark: '测试环境' },
+          { name: 'vsm-gongan-04', status: 'running', node: 'node-03', spec: '4C8G',  ip: '192.168.10.44', disk: 60, remark: '高敏感客户（专机隔离）' }
+        ],
+        nodes: [
+          { id: 'node-02', label: 'node-02' },
+          { id: 'node-03', label: 'node-03' },
+          { id: 'node-04', label: 'node-04' }
+        ],
+        // 存储池按目标节点区分（模拟 /api/storage-pool/vm-targets）
+        poolMap: {
+          'node-02': [ { id: 'pool-ssd', label: 'pool-ssd', available: 180 }, { id: 'pool-sata', label: 'pool-sata', available: 900 } ],
+          'node-03': [ { id: 'pool-ssd', label: 'pool-ssd', available: 20  }, { id: 'pool-sata', label: 'pool-sata', available: 640 } ],
+          'node-04': [ { id: 'pool-ssd', label: 'pool-ssd', available: 240 }, { id: 'pool-sata', label: 'pool-sata', available: 720 } ]
+        },
+        intents: [
+          { value: 'balance',     label: '负载均衡',     tip: '将优先推荐资源余量最大的节点' },
+          { value: 'upgrade',     label: '设备升级维护', tip: '将排除源节点，推荐承接后整体负载仍安全的节点' },
+          { value: 'consolidate', label: '资源集中',     tip: '将推荐可空出最多节点的聚拢方案' },
+          { value: 'fault',       label: '故障规避',     tip: '将优先推荐健康度最高的节点，可能提示兼容性取舍' },
+          { value: 'isolation',   label: '安全合规隔离', tip: '将限定带「专机/专池」标签的节点' },
+          { value: 'latency',     label: '网络位置优化', tip: '将按网络时延/拓扑就近推荐' }
+        ],
+
+        // ===== 右键菜单 =====
+        ctxVisible: false,
+        ctxX: 0,
+        ctxY: 0,
+        ctxRow: {},
+
+        // ===== 主弹窗 =====
+        mainVisible: false,
+        form: {
+          intent: '', target: '', mode: 'live',
+          bwLimit: false, bwValue: 500,
+          cpuThrottle: false, cpuThrottlePercent: 50,
+          pool: ''
+        },
+        recommending: false,
+        candidates: [],
+        recommendBlocked: null,
+        prechecking: false,
+        precheck: null,
+        portChanged: false,
+        forceBlocked: false,
+        forceNetFail: false,
+
+        // ===== 进度弹窗 =====
+        progressVisible: false,
+        progress: 0,
+        finalTarget: '',
+        timer: null,
+        stat: { synced: '0.0', left: '12.0', speed: 0, eta: '-', dirtyRate: 12 },
+        throttleApplied: false,
+        cancelling: false,
+        cancelled: false,
+        canCloseProgress: false,
+
+        // ===== 日志 =====
+        logVisible: false,
+        logs: [],
+
+        // ===== 源端副本处置（R17）=====
+        // 三档：全绿=立即清除 / 黄项=保留24h / 红项或取消=不适用
+        srcVisible: false,        // 是否显示「源端处置」行（f4：失败/取消时不显示）
+        srcRetainActive: false,   // 是否在保留期内
+        srcClearFailed: false,    // 清除是否失败
+        srcRetainUntil: 0,        // 保留到期时间戳
+        srcCountdown: 0,          // 剩余秒数
+        srcCountdownTimer: null,
+        srcmgrVisible: false,
+        srcmgrVsm: {},
+        srcmgrCleared: false,
+        srcRetainHours: 24        // 保留期默认 24h（硬上限 72h，界面不可调）
+      };
+    },
+    computed: {
+      intentTip() {
+        const it = this.intents.find(x => x.value === this.form.intent);
+        return it ? it.tip : '';
+      },
+      intentLabel() {
+        const it = this.intents.find(x => x.value === this.form.intent);
+        return it ? it.label : '综合可用性';
+      },
+      canSubmit() {
+        if (!this.precheck || !this.precheck.allowed) return false;
+        return !!this.form.pool && !!this.form.target;
+      },
+      // 存储池选项随选定的目标节点加载（模拟 /api/storage-pool/vm-targets?node=）
+      storagePools() {
+        return this.poolMap[this.form.target] || [];
+      },
+      diskPath() {
+        return '/var/lib/libvirt/images/' + (this.ctxRow.name || 'vsm-caiwu-01') + '.qcow2';
+      },
+      srcCountdownText() {
+        const s = Math.max(0, this.srcCountdown);
+        const p = (n) => String(n).padStart(2, '0');
+        return p(Math.floor(s / 3600)) + ':' + p(Math.floor((s % 3600) / 60)) + ':' + p(s % 60);
+      },
+      srcRetainUntilText() {
+        if (!this.srcRetainUntil) return '-';
+        const d = new Date(this.srcRetainUntil);
+        const p = (n) => String(n).padStart(2, '0');
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+          + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+      },
+      stageIndex() {
+        const p = this.progress;
+        if (p >= 100) return 5;
+        if (p >= 88) return 3;
+        if (p >= 60) return 2;
+        if (p >= 5) return 1;
+        return 0;
+      },
+      stageTip() {
+        const tips = [
+          '已完成迁移前检查，准备开始数据同步',
+          '正在把 VSM 的内存与磁盘数据同步到目标节点，业务不受影响',
+          '即将进行源到目标切换，存在毫秒级业务瞬断',
+          '切换完成，正在做目标端健康验证',
+          ''
+        ];
+        return tips[Math.min(this.stageIndex, 4)] || '';
+      },
+      canCancel() {
+        // 取消仅允许在「准备切换」站之前（对应源码：切换阶段取消非安全回滚）
+        return this.progress < 60;
+      },
+      showRisk() {
+        return !this.throttleApplied && this.progress > 25 && this.progress < 72;
+      }
+    },
+    mounted() {
+      document.addEventListener('mousedown', this.onDocMouseDown);
+      // 演示快捷入口：?demo=main 直接打开主弹窗（省去右键动作）；?demo=progress 直接看进度弹窗
+      const demo = new URLSearchParams(location.search).get('demo');
+      if (demo) {
+        this.ctxRow = this.vsms[0];
+        if (demo === 'main') {
+          this.openMigrate();
+        } else if (demo === 'recommend') {
+          this.openMigrate();
+          this.form.intent = 'upgrade';
+          const r = this.buildRecommend();
+          this.candidates = r.candidates;
+          this.pickCandidate(this.candidates[0]);
+        } else if (demo === 'precheck') {
+          this.openMigrate();
+          this.form.intent = 'upgrade';
+          const r = this.buildRecommend();
+          this.candidates = r.candidates;
+          this.pickCandidate(this.candidates[0]);
+          this.form.pool = 'pool-ssd';
+          this.precheck = this.buildPrecheck();
+        } else if (demo === 'blocked') {
+          this.openMigrate();
+          this.form.intent = 'upgrade';
+          this.forceBlocked = true;
+          this.recommendBlocked = this.buildRecommend().blocked;
+        } else if (demo === 'netfail') {
+          this.openMigrate();
+          this.form.intent = 'upgrade';
+          const r = this.buildRecommend();
+          this.candidates = r.candidates;
+          this.pickCandidate(this.candidates[0]);
+          this.form.pool = 'pool-ssd';
+          this.forceNetFail = true;
+          this.precheck = this.buildPrecheck();
+        } else if (demo === 'progress') {
+          this.form.intent = 'upgrade';
+          this.form.target = 'node-02';
+          this.form.pool = 'pool-ssd';
+          this.startProgress('node-02');
+        } else if (demo === 'cancel') {
+          this.form.intent = 'balance';
+          this.form.target = 'node-03';
+          this.form.pool = 'pool-ssd';
+          this.startProgress('node-03');
+        } else if (demo === 'portchanged') {
+          this.form.intent = 'upgrade';
+          this.form.target = 'node-03';
+          this.form.pool = 'pool-sata';
+          this.portChanged = true;
+          this.startProgress('node-03');
+        } else if (demo === 'srcret') {
+          // R17 档2：黄项 → 源端副本保留期
+          this.form.intent = 'upgrade';
+          this.form.target = 'node-03';
+          this.form.pool = 'pool-sata';
+          this.portChanged = true;
+          this.startProgress('node-03');
+          this.progress = 100;
+          if (this.timer) { clearInterval(this.timer); this.timer = null; }
+          this.stat.eta = '已完成';
+          this.canCloseProgress = true;
+          this.writeLogs('success');
+          this.initSourceDisposition();
+        } else if (demo === 'srcmgr') {
+          // R17：列表页「源端副本管理」入口（弹窗关闭后的唯一入口）
+          this.ctxRow.srcRetain = { untilText: '2026-11-07 14:32' };
+          this.srcRetainUntil = Date.now() + this.srcRetainHours * 3600 * 1000;
+          this.srcCountdown = this.srcRetainHours * 3600;
+          this.openSrcMgr();
+        } else if (demo === 'logs') {
+          this.form.intent = 'upgrade';
+          this.form.target = 'node-02';
+          this.form.pool = 'pool-ssd';
+          this.finalTarget = 'node-02';
+          this.writeLogs('success');
+          this.logVisible = true;
+        }
+      }
+    },
+    beforeUnmount() {
+      document.removeEventListener('mousedown', this.onDocMouseDown);
+      if (this.timer) clearInterval(this.timer);
+      if (this.srcCountdownTimer) clearInterval(this.srcCountdownTimer);
+    },
+    methods: {
+      // ===== 右键菜单 =====
+      onDocMouseDown(e) {
+        if (!this.ctxVisible) return;
+        if (e.target && e.target.closest && e.target.closest('.ctx-menu')) return;
+        this.ctxVisible = false;
+      },
+      openCtxMenu(row, column, event) {
+        this.ctxRow = row;
+        this.ctxX = Math.min(event.clientX, window.innerWidth - 190);
+        this.ctxY = Math.min(event.clientY, window.innerHeight - 360);
+        this.ctxVisible = true;
+      },
+      pickCtx(cmd) {
+        this.ctxVisible = false;
+        if (cmd === 'migrate') {
+          this.openMigrate();
+        } else if (cmd === 'srcmgr') {
+          this.openSrcMgr();
+        } else {
+          this.$message.info('该操作为平台现有功能，原型中未实现');
+        }
+      },
+
+      // ===== 主弹窗 =====
+      openMigrate() {
+        const running = this.ctxRow.status === 'running';
+        this.form = {
+          intent: '', target: '',
+          mode: running ? 'live' : 'cold',
+          bwLimit: false, bwValue: 500,
+          cpuThrottle: false, cpuThrottlePercent: 50,
+          pool: ''
+        };
+        this.candidates = [];
+        this.recommendBlocked = null;
+        this.precheck = null;
+        this.portChanged = false;
+        // 复位源端处置状态（R17）
+        this.srcVisible = false;
+        this.srcRetainActive = false;
+        this.srcClearFailed = false;
+        this.srcRetainUntil = 0;
+        this.srcCountdown = 0;
+        if (this.srcCountdownTimer) { clearInterval(this.srcCountdownTimer); this.srcCountdownTimer = null; }
+        this.mainVisible = true;
+      },
+      onIntentChange() {
+        // 意图变了，已有推荐结果失效
+        this.candidates = [];
+        this.recommendBlocked = null;
+        this.precheck = null;
+        // 未手选过节点时，存储池一并清空
+        if (!this.form.target) this.form.pool = '';
+      },
+      onTargetChange() {
+        this.precheck = null;
+        // 存储池选项随目标节点变化，已选池可能不属于新节点，需重选
+        if (!this.storagePools.some(p => p.id === this.form.pool)) this.form.pool = '';
+      },
+      onPoolChange() { this.precheck = null; },
+
+      // ===== 系统推荐（预检之前，输出多个候选节点）=====
+      runRecommend() {
+        this.recommending = true;
+        this.candidates = [];
+        this.recommendBlocked = null;
+        setTimeout(() => {
+          this.recommending = false;
+          const res = this.buildRecommend();
+          if (res.blocked) {
+            this.recommendBlocked = res.blocked;
+          } else {
+            this.candidates = res.candidates;
+            // 自动选中推荐首选，用户仍可改选其他候选
+            if (!this.form.target && this.candidates.length) this.pickCandidate(this.candidates[0]);
+          }
+        }, 700);
+      },
+      buildRecommend() {
+        const disk = this.ctxRow.disk || 60;
+        if (this.forceBlocked) {
+          return { blocked: {
+            nodes: [
+              { node: 'node-02', reason: '目标节点不存在同名交换机 sw-caiwu（10.0.1.0/24）' },
+              { node: 'node-03', reason: '目标存储池可用空间不足（需 ' + disk + ' GiB，可用 20 GiB）' },
+              { node: 'node-04', reason: 'CPU 型号不兼容（AMD EPYC 9654 vs Intel Xeon 6338）' }
+            ],
+            suggest: '① 在 node-02 创建同名交换机与安全组后重试；② 或清理 node-03 存储池空间；③ 或临时改选 node-04 并接受冷迁移'
+          }};
+        }
+        // 硬过滤后的候选（演示数据）：每个候选带该节点的存储池概览
+        const poolBrief = (id) => (this.poolMap[id] || []).map(p => ({ id: p.id, label: p.label, available: p.available }));
+        const byIntent = {
+          upgrade: [
+            { node: 'node-02', best: true,  resource: '可用 48 核 / 128 GiB', network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '承接后负载 62%，仍在安全线内；当前无迁移任务排队', pools: poolBrief('node-02') },
+            { node: 'node-03', best: false, resource: '可用 32 核 / 96 GiB',  network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '承接后负载 71%，可用但余量较小', pools: poolBrief('node-03') },
+            { node: 'node-04', best: false, resource: '可用 40 核 / 128 GiB', network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '承接后负载 55%，但为专机节点，建议保留给隔离业务', pools: poolBrief('node-04') }
+          ],
+          balance: [
+            { node: 'node-03', best: true,  resource: '可用 32 核 / 96 GiB',  network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '资源余量最大：CPU 余量 45%、内存余量 32 GiB', pools: poolBrief('node-03') },
+            { node: 'node-02', best: false, resource: '可用 48 核 / 128 GiB', network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '承接后负载 62%，均衡效果次之', pools: poolBrief('node-02') },
+            { node: 'node-04', best: false, resource: '可用 40 核 / 128 GiB', network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '承接后负载 55%，但为专机节点', pools: poolBrief('node-04') }
+          ],
+          fault: [
+            { node: 'node-04', best: true,  resource: '可用 40 核 / 128 GiB', network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '硬件告警数 0，健康度最高；注意 CPU 跨代，特性将降级为最小公集', pools: poolBrief('node-04') },
+            { node: 'node-02', best: false, resource: '可用 48 核 / 128 GiB', network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '硬件告警数 1（风扇转速异常），仍可承接', pools: poolBrief('node-02') }
+          ],
+          isolation: [
+            { node: 'node-04', best: true,  resource: '可用 40 核 / 128 GiB', network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '专机节点，当前仅承载 1 台 VSM，满足物理隔离要求', pools: poolBrief('node-04') }
+          ],
+          consolidate: [
+            { node: 'node-02', best: true,  resource: '可用 48 核 / 128 GiB', network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '集中后 node-04 将无 VSM 运行，可关机省电', pools: poolBrief('node-02') },
+            { node: 'node-03', best: false, resource: '可用 32 核 / 96 GiB',  network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '集中后仅能空出 1 台节点，效果次之', pools: poolBrief('node-03') }
+          ],
+          latency: [
+            { node: 'node-03', best: true,  resource: '可用 32 核 / 96 GiB',  network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '与业务方同一接入交换机，实测时延 0.3 ms', pools: poolBrief('node-03') },
+            { node: 'node-02', best: false, resource: '可用 48 核 / 128 GiB', network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '实测时延 0.8 ms，满足但非最优', pools: poolBrief('node-02') }
+          ]
+        };
+        const list = byIntent[this.form.intent] || [
+          { node: 'node-02', best: true,  resource: '可用 48 核 / 128 GiB', network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '综合可用性较高', pools: poolBrief('node-02') },
+          { node: 'node-03', best: false, resource: '可用 32 核 / 96 GiB',  network: 'sw-caiwu（10.0.1.0/24）· sg-caiwu', reason: '资源余量次之', pools: poolBrief('node-03') }
+        ];
+        return { candidates: list.map(x => JSON.parse(JSON.stringify(x))) };
+      },
+      pickCandidate(c) {
+        const changed = this.form.target !== c.node;
+        this.form.target = c.node;
+        if (changed) {
+          this.precheck = null;
+          if (!this.storagePools.some(p => p.id === this.form.pool)) this.form.pool = '';
+        }
+      },
+      onModeChange(val) {
+        if (val === 'cold' && this.ctxRow.status === 'running') {
+          this.$confirm(
+            '冷迁移会先关闭虚拟机再复制磁盘，密码服务将中断。确认使用冷迁移？',
+            '业务中断提示',
+            { type: 'warning', confirmButtonText: '仍使用冷迁移', cancelButtonText: '改回热迁移' }
+          ).catch(() => { this.form.mode = 'live'; });
+        }
+      },
+
+      // ===== 预检 =====
+      runPrecheck() {
+        this.prechecking = true;
+        this.precheck = null;
+        setTimeout(() => {
+          this.prechecking = false;
+          this.precheck = this.buildPrecheck();
+        }, 900);
+      },
+      buildPrecheck() {
+        const pool = this.storagePools.find(p => p.id === this.form.pool) || this.storagePools[0] || { id: 'pool-ssd', label: 'pool-ssd', available: 180 };
+        const disk = this.ctxRow.disk || 60;
+        const target = this.form.target;
+
+        const checks = [
+          { name: '兼容性检查', level: 'pass', detail: 'CPU 型号一致（Intel Xeon 6338），机器类型 pc-q35-8.2 一致，支持在线热迁移' },
+          { name: '资源检查',   level: 'pass', detail: target + ' 剩余资源满足 ' + this.ctxRow.spec + '（可用 48 核 / 128 GiB）' }
+        ];
+        // 存储容量核算（非共享存储必检）
+        const enough = pool.available >= disk;
+        checks.push({
+          name: '磁盘容量核算',
+          level: enough ? 'pass' : 'block',
+          detail: enough
+            ? '磁盘总量 ' + disk + ' GiB / ' + pool.label + ' 可用 ' + pool.available + ' GiB，余量 ' + (pool.available - disk) + ' GiB'
+            : '磁盘总量 ' + disk + ' GiB / ' + pool.label + ' 可用 ' + pool.available + ' GiB，空间不足，无法整盘复制'
+        });
+        // 网络落位：系统自动匹配同名交换机 + 同名安全组
+        const netMissing = this.forceNetFail;
+        checks.push({
+          name: '网络落位',
+          level: netMissing ? 'block' : 'pass',
+          detail: netMissing
+            ? target + ' 不存在同名交换机 sw-caiwu（10.0.1.0/24），网桥无法落位；安全组 sg-caiwu 亦未找到'
+            : '已匹配 ' + target + ' 上的交换机 sw-caiwu（10.0.1.0/24）、安全组 sg-caiwu，迁移后可自动落位'
+        });
+        checks.push({ name: '磁盘路径冲突', level: 'pass', detail: '目标路径 ' + this.diskPath + ' 未被占用' });
+        if (this.form.mode === 'live') {
+          const bw = this.form.bwLimit ? this.form.bwValue + ' MiB/s' : '不限速';
+          checks.push({
+            name: '带宽预估',
+            level: 'warn',
+            detail: '预计传输 ' + disk + ' GiB 磁盘 + 4 GiB 内存，当前' + (this.form.bwLimit ? '限速 ' + bw : '不限速') + '，约占业务网络 15%，预计耗时 ' + Math.max(1, Math.round(disk / 7.5)) + ' 分钟'
+          });
+        }
+
+        const hasBlock = checks.some(c => c.level === 'block');
+        const hasWarn = checks.some(c => c.level === 'warn');
+        return { allowed: !hasBlock, hasWarn, checks };
+      },
+
+      // ===== 提交 =====
+      submitMigrate() {
+        const targetText = this.form.target;
+        const intentText = this.form.intent
+          ? (this.intents.find(i => i.value === this.form.intent) || {}).label
+          : '未声明';
+        const modeText = this.form.mode === 'live' ? '热迁移' : '冷迁移';
+        const bwText = this.form.bwLimit ? this.form.bwValue + ' MiB/s' : '不限速';
+        const pool = this.storagePools.find(p => p.id === this.form.pool) || { label: '-', available: '-' };
+        const poolText = pool.label + '（可用 ' + pool.available + ' GiB）';
+        const disk = this.ctxRow.disk || 60;
+        const minutes = Math.max(1, Math.round(disk / 7.5));
+        const impact = this.form.mode === 'live'
+          ? '切换瞬间存在毫秒级业务瞬断。'
+          : '迁移将先关闭 VSM，业务会中断。';
+
+        const html = ''
+          + '<div style="font-size:13px;line-height:2;color:#606266">'
+          + '<div>虚拟机：<b style="color:#303133">' + this.ctxRow.name + '</b></div>'
+          + '<div>迁移意图：<b style="color:#303133">' + intentText + '</b></div>'
+          + '<div>目标节点：<b style="color:#303133">' + targetText + '</b></div>'
+          + '<div>迁移模式：<b style="color:#303133">' + modeText + '</b></div>'
+          + '<div>带宽限速：<b style="color:#303133">' + bwText + '</b></div>'
+          + '<div>目标存储池：<b style="color:#303133">' + poolText + '</b></div>'
+          + '<div>网络落位：<b style="color:#303133">交换机 sw-caiwu（10.0.1.0/24）· 安全组 sg-caiwu</b> <span style="color:#909399">（系统自动匹配）</span></div>'
+          + '<div style="margin-top:8px;color:#409eff">将复制磁盘 ' + disk + ' GiB 至目标节点，预计约 ' + minutes + ' 分钟。</div>'
+          + '<div style="margin-top:4px;color:#e6a23c">' + impact + '</div>'
+          + '</div>';
+
+        this.$confirm(html, '确认开始迁移', {
+          dangerouslyUseHTMLString: true,
+          confirmButtonText: '确认开始迁移',
+          cancelButtonText: '取消',
+          type: 'warning'
+        }).then(() => {
+          this.startProgress(targetText.replace('（系统推荐）', ''));
+        }).catch(() => {});
+      },
+
+      // ===== 进度模拟 =====
+      totalGiB() {
+        // 磁盘整盘复制 + 内存镜像（非共享存储）
+        return (this.ctxRow.disk || 60) + 4;
+      },
+      startProgress(target) {
+        this.mainVisible = false;
+        this.finalTarget = target;
+        this.progress = 0;
+        this.throttleApplied = false;
+        this.cancelling = false;
+        this.cancelled = false;
+        this.canCloseProgress = false;
+        this.stat = { synced: '0.0', left: (this.totalGiB()).toFixed(1), speed: 0, eta: '-', dirtyRate: 12 };
+        this.progressVisible = true;
+
+        if (this.timer) clearInterval(this.timer);
+        this.timer = setInterval(() => {
+          if (this.cancelling || this.cancelled) return;
+
+          const step = this.throttleApplied ? 9 : (this.form.bwLimit ? 5 : 7);
+          this.progress = Math.min(100, this.progress + step);
+
+          const total = this.totalGiB();
+          const synced = (this.progress / 100) * total;
+          this.stat.synced = synced.toFixed(1);
+          this.stat.left = (total - synced).toFixed(1);
+          this.stat.speed = this.progress >= 85
+            ? 0
+            : (this.form.bwLimit ? 500 : 780) + Math.floor(Math.random() * 60);
+          this.stat.dirtyRate = this.throttleApplied
+            ? 6
+            : (this.progress > 25 && this.progress < 72 ? 22 : 12);
+
+          const leftMiB = (total - synced) * 1024;
+          const remainSec = this.stat.speed > 0 ? Math.round(leftMiB / this.stat.speed) : 0;
+          if (this.progress >= 85) {
+            this.stat.eta = '切换中';
+          } else if (remainSec > 60) {
+            this.stat.eta = Math.floor(remainSec / 60) + ' 分 ' + (remainSec % 60) + ' 秒';
+          } else {
+            this.stat.eta = remainSec + ' 秒';
+          }
+
+          if (this.progress >= 100) {
+            clearInterval(this.timer);
+            this.timer = null;
+            this.stat.eta = '已完成';
+            // 顺序不可颠倒：writeLogs 会整体重置 this.logs，源端记录必须在其后追加
+            this.writeLogs('success');
+            this.initSourceDisposition();
+            setTimeout(() => { this.canCloseProgress = true; }, 1200);
+          }
+        }, 320);
+      },
+
+      adoptThrottle() {
+        this.throttleApplied = true;
+        this.form.cpuThrottle = true;
+        this.$message.success('已启用 CPU 节流 50%');
+      },
+
+      // ===== 源端副本处置（R17）=====
+      // 三档策略：五项全绿 → 立即清除；有黄项 → 保留期；红项/取消 → 不适用
+      initSourceDisposition() {
+        this.srcClearFailed = false;
+        this.srcmgrCleared = false;
+        // 本原型中「对外端口变更」即黄项
+        if (this.portChanged) {
+          this.srcVisible = true;
+          this.srcRetainActive = true;
+          this.srcRetainUntil = Date.now() + this.srcRetainHours * 3600 * 1000;
+          this.startSrcCountdown();
+          // 列表行打上「源端未清」角标
+          this.ctxRow.srcRetain = { untilText: this.srcRetainUntilText };
+          this.writeSrcLog('retain');
+        } else {
+          // 全绿：源端副本已自动清除
+          this.srcVisible = true;
+          this.srcRetainActive = false;
+          this.writeSrcLog('auto');
+        }
+      },
+      startSrcCountdown() {
+        if (this.srcCountdownTimer) clearInterval(this.srcCountdownTimer);
+        const tick = () => {
+          this.srcCountdown = Math.max(0, Math.round((this.srcRetainUntil - Date.now()) / 1000));
+          if (this.srcCountdown <= 0) {
+            clearInterval(this.srcCountdownTimer);
+            this.srcCountdownTimer = null;
+            this.autoClearSource();
+          }
+        };
+        tick();
+        this.srcCountdownTimer = setInterval(tick, 1000);
+      },
+      // 到期自动清除：日志操作人必须记「系统（到期自动）」
+      autoClearSource() {
+        this.srcRetainActive = false;
+        if (this.ctxRow.srcRetain) delete this.ctxRow.srcRetain;
+        this.writeSrcLog('auto');
+        this.$message.info('源端副本保留期已到期，系统已自动清除');
+      },
+      // 人工清除（入口二：进度弹窗 / 列表右键）
+      clearSourceCopy(entry) {
+        this.$confirm(
+          '清除后无法再从源节点 ' + this.ctxRow.node + ' 恢复此 VSM。\n'
+            + this.ctxRow.node + ' 上的磁盘文件 ' + this.diskPath + '（' + this.ctxRow.disk + ' GiB）将被永久删除。\n'
+            + '确认清除？',
+          '确认清除源端副本',
+          { type: 'warning', confirmButtonText: '确认清除', cancelButtonText: '取消' }
+        ).then(() => {
+          this.srcRetainActive = false;
+          if (this.srcCountdownTimer) { clearInterval(this.srcCountdownTimer); this.srcCountdownTimer = null; }
+          if (this.ctxRow.srcRetain) delete this.ctxRow.srcRetain;
+          this.srcmgrCleared = true;
+          this.writeSrcLog('manual');
+          this.$message.success('源端副本已清除，' + this.ctxRow.node + ' 磁盘空间已释放');
+        }).catch(() => {});
+      },
+      // 清理失败分支（演示用：点【重试清除】走清除成功，展示失败态存在）
+      retryClearSource() {
+        this.srcClearFailed = false;
+        this.srcRetainActive = true;
+        this.startSrcCountdown();
+        this.$message.success('重试清除中…');
+      },
+      openSrcMgr() {
+        this.srcmgrVsm = this.ctxRow;
+        this.srcmgrCleared = !this.ctxRow.srcRetain;
+        this.srcmgrVisible = true;
+        if (this.ctxRow.srcRetain && !this.srcRetainUntil) {
+          // 演示：从列表直接进入时补一个 24h 倒计时
+          this.srcRetainUntil = Date.now() + this.srcRetainHours * 3600 * 1000;
+          this.srcCountdown = this.srcRetainHours * 3600;
+        }
+      },
+      writeSrcLog(kind) {
+        const now = new Date();
+        const p = (n) => String(n).padStart(2, '0');
+        const fmt = (d) => d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+          + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+        const base = {
+          time: fmt(now), module: '跨节点迁移',
+          target: this.ctxRow.name + '（源节点 ' + this.ctxRow.node + '）',
+          result: 'success', resultText: '成功'
+        };
+        if (kind === 'retain') {
+          this.logs.push(Object.assign({}, base, {
+            user: 'admin', action: '源端副本保留',
+            reason: '保留期 ' + this.srcRetainHours + 'h，到期时间 ' + this.srcRetainUntilText + '（原因：对外端口变更，验证含黄项）'
+          }));
+        } else if (kind === 'manual') {
+          this.logs.push(Object.assign({}, base, {
+            user: 'admin', action: '源端副本清除',
+            reason: '人工清除，保留期提前结束；磁盘文件已永久删除'
+          }));
+        } else {
+          this.logs.push(Object.assign({}, base, {
+            user: '系统（到期自动）', action: '源端副本清除',
+            reason: kind === 'auto'
+              ? '到期自动清除（保留期 ' + this.srcRetainHours + 'h 结束）'
+              : '迁移五项验证全部通过，系统自动立即清除'
+          }));
+        }
+      },
+
+      cancelMigrate() {
+        this.$confirm(
+          '取消后 VSM 将继续运行在源节点 ' + this.ctxRow.node + '。'
+            + '非共享存储下，目标节点上已复制的临时磁盘数据将被清理。确认取消？',
+          '取消迁移',
+          { type: 'warning', confirmButtonText: '确认取消', cancelButtonText: '继续迁移' }
+        ).then(() => {
+          this.cancelling = true;
+          setTimeout(() => {
+            if (this.timer) { clearInterval(this.timer); this.timer = null; }
+            this.cancelling = false;
+            this.cancelled = true;
+            this.canCloseProgress = true;
+            this.writeLogs('cancelled');
+            this.$message.success('取消完成，VSM 仍位于源节点 ' + this.ctxRow.node + '，目标端临时磁盘数据已清理');
+          }, 1500);
+        }).catch(() => {});
+      },
+
+      // ===== 日志（模拟写入现有日志中心） =====
+      writeLogs(kind) {
+        const now = new Date();
+        const fmt = (offsetSec) => {
+          const d = new Date(now.getTime() + offsetSec * 1000);
+          const p = (n) => String(n).padStart(2, '0');
+          return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+            + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+        };
+        const intentText = this.form.intent
+          ? (this.intents.find(i => i.value === this.form.intent) || {}).label
+          : '未声明';
+        const modeText = this.form.mode === 'live' ? '热迁移' : '冷迁移';
+        const target = this.finalTarget;
+        const cross = this.ctxRow.node + '→' + target;
+
+        const rows = [
+          { time: fmt(-180), user: 'admin', module: '跨节点迁移', action: '迁移预检',
+            target: this.ctxRow.name + '@' + target, result: 'success', resultText: '成功',
+            reason: '预检通过（1 项警告：带宽占用）' },
+          { time: fmt(-168), user: 'admin', module: '跨节点迁移', action: '提交迁移',
+            target: this.ctxRow.name + ' ' + cross, result: 'success', resultText: '成功',
+            reason: '意图=' + intentText + '、' + modeText + '、存储池=' + (this.form.pool || '-') + (this.form.bwLimit ? '、限速 ' + this.form.bwValue + ' MiB/s' : '') }
+        ];
+        if (kind === 'success') {
+          rows.push({ time: fmt(0), user: 'admin', module: '跨节点迁移', action: '迁移完成',
+            target: this.ctxRow.name + ' ' + cross, result: 'success', resultText: '成功',
+            reason: this.portChanged
+              ? '五项验证含黄项（对外端口变更 8443 → 18443），待业务方确认'
+              : '五项验证通过（状态/IP/探活/磁盘落位/对外端口）' });
+        } else {
+          rows.push({ time: fmt(0), user: 'admin', module: '跨节点迁移', action: '取消迁移',
+            target: this.ctxRow.name + ' ' + cross, result: 'success', resultText: '成功',
+            reason: '操作者主动取消，VSM 仍运行于源节点，目标端临时磁盘已清理' });
+        }
+        this.logs = rows;
+      },
+      viewLogs() {
+        this.logVisible = true;
+      }
+    }
+  })
+  .use(ElementPlus)
+  .mount('#app');
+</script>
+</body>
+</html>
