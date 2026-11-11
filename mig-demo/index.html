@@ -6,33 +6,43 @@
 <title>热迁移实时演示</title>
 <style>
   :root {
-    --bg: #0f1419;
-    --panel: #171d24;
-    --line: #263039;
-    --text: #dbe3ea;
-    --dim: #7d8b98;
-    --accent: #35c0a2;
-    --warn: #e2a03f;
-    --danger: #e05c5c;
+    --bg: #edf4fb;
+    --panel: #ffffff;
+    --line: #d5e2ee;
+    --text: #172b45;
+    --dim: #526984;
+    --accent: #176bd0;
+    --warn: #a96513;
+    --danger: #b62b3b;
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 24px;
-    background: var(--bg); color: var(--text);
+    margin: 0; padding: clamp(16px, 5vw, 64px) 16px;
+    background-image: radial-gradient(ellipse at top, #dcecff, transparent 70%);
+    min-height: 100vh;
+    background-color: var(--bg); color: var(--text);
     font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
   }
-  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  h1 { font-size: clamp(26px, 5vw, 40px); line-height: 1.2; letter-spacing: -.03em; margin: 0 0 10px; }
   .sub { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  main { max-width: 760px; margin: auto; }
+  dialog.panel { width: min(720px, calc(100% - 24px)); max-height: 90dvh; color: var(--text); }
+  dialog::backdrop { background: rgba(23, 43, 69, .38); }
+  #phase { margin: 0 0 12px; color: var(--dim); }
+  .placement { margin: 0 0 16px; padding: 12px 16px; background: #f3f7fc; border: 1px solid var(--line); border-radius: 10px; }
+  .placement[data-verified="true"] { background: #ecfaf4; border-color: #b9e4cf; }
+  .placement p { margin: 4px 0 0; }
+  .actions { flex-wrap: wrap; }
   .panel {
     background: var(--panel); border: 1px solid var(--line);
-    border-radius: 8px; padding: 16px;
+    border-radius: 18px; padding: clamp(16px, 4vw, 28px);
+    box-shadow: 0 14px 40px #21497613;
   }
-  .panel h2 { font-size: 13px; color: var(--dim); font-weight: 500; margin: 0 0 12px; letter-spacing: .5px; }
+  .panel h2 { font-size: 19px; color: var(--text); font-weight: 650; margin: 0 0 12px; letter-spacing: .5px; }
   label { display: block; font-size: 12px; color: var(--dim); margin: 10px 0 4px; }
   input, select {
     width: 100%; padding: 8px 10px; border-radius: 6px;
-    border: 1px solid var(--line); background: #0b1015; color: var(--text);
+    border: 1px solid var(--line); background: #f3f7fc; color: var(--text);
     font: inherit; outline: none;
   }
   input:focus, select:focus { border-color: var(--accent); }
@@ -40,50 +50,50 @@
   .row > * { flex: 1; }
   button {
     padding: 9px 16px; border-radius: 6px; border: 1px solid var(--line);
-    background: #222c35; color: var(--text); font: inherit; cursor: pointer;
+    background: #eaf2fb; color: var(--text); font: inherit; cursor: pointer;
   }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .45; cursor: not-allowed; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #04120f; font-weight: 600; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #ffffff; font-weight: 600; }
   button.danger { border-color: var(--danger); color: var(--danger); }
   .actions { display: flex; gap: 10px; margin-top: 16px; }
 
   .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-  .stat { background: #0d1319; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+  .stat { background: #f6f9fd; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
   .stat .k { font-size: 11px; color: var(--dim); }
   .stat .v { font-size: 20px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
   .stat .u { font-size: 11px; color: var(--dim); margin-left: 3px; font-weight: 400; }
 
   .bar-wrap { margin-top: 16px; }
   .bar-meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--dim); margin-bottom: 6px; }
-  .bar { height: 10px; border-radius: 5px; background: #0b1015; overflow: hidden; border: 1px solid var(--line); }
-  .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #2a9d8f, #35c0a2); transition: width .5s; }
+  .bar { height: 10px; border-radius: 5px; background: #f3f7fc; overflow: hidden; border: 1px solid var(--line); }
+  .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #60a5fa, #176bd0); transition: width .5s; }
 
   svg.chart { width: 100%; height: 150px; margin-top: 14px; }
 
   .logs {
     margin-top: 16px; height: 170px; overflow: auto;
-    background: #0b1015; border: 1px solid var(--line); border-radius: 6px;
-    padding: 10px; font: 12px/1.7 Consolas, "Courier New", monospace; color: #9fb0be;
+    background: #f3f7fc; border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px; font: 12px/1.7 Consolas, "Courier New", monospace; color: #354b67;
     white-space: pre-wrap; word-break: break-all;
   }
   .badge {
     display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px;
-    background: #222c35; color: var(--dim); margin-left: 8px;
+    background: #eaf2fb; color: var(--dim); margin-left: 8px;
   }
-  .badge.active { background: rgba(53,192,162,.15); color: var(--accent); }
-  .badge.failed { background: rgba(224,92,92,.15); color: var(--danger); }
-  .badge.completed { background: rgba(53,192,162,.2); color: var(--accent); }
+  .badge.active { background: #e5f0ff; color: var(--accent); }
+  .badge.failed { background: #fff0f2; color: var(--danger); }
+  .badge.completed { background: #e5f0ff; color: var(--accent); }
   .err { color: var(--danger); font-size: 12px; margin-top: 8px; }
-  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+  @media (max-width: 520px) { .stat-grid { grid-template-columns: repeat(2, 1fr); } }
 </style>
 </head>
 <body>
-  <h1>虚拟机热迁移 · 实时演示</h1>
+  <main>
+  <h1>虚拟机热迁移</h1>
   <div class="sub">数据全部来自本机 libvirt 与 QEMU 的真实运行状态（virsh domjobinfo / virsh migrate）</div>
 
-  <div class="grid">
-    <!-- 左：控制 -->
     <div class="panel">
       <h2>迁移控制</h2>
 
@@ -93,6 +103,9 @@
       <label>迁移目标（libvirt URI）</label>
       <input id="target" placeholder="qemu+ssh://root@10.19.207.10/system?port=55555">
 
+      <label for="probeURL">虚拟机业务健康检查地址（可选）</label>
+      <input id="probeURL" type="url" placeholder="http://虚拟机IP:端口/health" aria-describedby="probeHint">
+      <p class="sub" id="probeHint">由运行 Demo 的源宿主机访问。填写后自动测量业务停顿。</p>
       <div class="row">
         <div>
           <label>存储复制方式</label>
@@ -110,14 +123,24 @@
 
       <div class="actions">
         <button class="primary" id="btnStart">发起热迁移</button>
-        <button class="danger" id="btnCancel" disabled>取消</button>
+        <button id="btnProgress" disabled>查看迁移进度</button>
       </div>
       <div class="err" id="err"></div>
     </div>
 
-    <!-- 右：状态 -->
-    <div class="panel">
-      <h2>实时状态 <span class="badge" id="statusBadge">空闲</span></h2>
+  </main>
+
+  <dialog class="panel" id="progress" aria-labelledby="progressTitle">
+      <h2 id="progressTitle">迁移进度 <span class="badge" id="statusBadge">空闲</span></h2>
+      <p id="phase" role="status"></p>
+      <section class="placement" id="placement" hidden aria-live="polite">
+        <strong id="placementTitle"></strong>
+        <p id="sourceCheck"></p>
+        <p id="targetCheck"></p>
+      </section>
+      <p class="err" id="jobError" role="alert"></p>
+      <p class="err" id="actionError" role="alert"></p>
+      <p class="err" id="streamError" role="status"></p>
 
       <div class="stat-grid">
         <div class="stat"><div class="k">已传输</div><div class="v"><span id="sProcessed">0</span><span class="u">MiB</span></div></div>
@@ -137,22 +160,32 @@
       </div>
 
       <svg class="chart" id="chart" viewBox="0 0 600 150" preserveAspectRatio="none">
-        <polyline id="speedLine" fill="none" stroke="#35c0a2" stroke-width="2" points=""></polyline>
-        <polyline id="dirtyLine" fill="none" stroke="#e2a03f" stroke-width="1.5" stroke-dasharray="4 3" points=""></polyline>
+        <polyline id="speedLine" fill="none" stroke="#176bd0" stroke-width="2" points=""></polyline>
+        <polyline id="dirtyLine" fill="none" stroke="#a96513" stroke-width="1.5" stroke-dasharray="4 3" points=""></polyline>
       </svg>
       <div style="font-size:11px;color:var(--dim);margin-top:4px">
-        <span style="color:#35c0a2">━ 传输速率</span>
-        <span style="color:#e2a03f;margin-left:12px">┅ 脏页产生速率</span>
+        <span style="color:#176bd0">━ 传输速率</span>
+        <span style="color:#a96513;margin-left:12px">┅ 脏页产生速率</span>
         <span style="margin-left:12px">（脏页速率逼近/超过速率 = 收敛困难）</span>
       </div>
-    </div>
-  </div>
-
-  <!-- 日志 -->
-  <div class="panel" style="margin-top:16px">
-    <h2>迁移日志（virsh 实时输出）</h2>
-    <div class="logs" id="logs"></div>
-  </div>
+      <section class="placement" id="measurements" hidden>
+        <strong>本次迁移测量</strong>
+        <div id="timingReport"></div>
+        <div id="diskReport"></div>
+        <div id="memoryReport"></div>
+        <div id="businessReport"></div>
+        <p>切换停机窗口包含恢复过程。业务探测约每 200 ms 发起一次，请求超时为 500 ms。</p>
+        <a href="/api/record" download="migration-record.json">下载迁移记录（JSON）</a>
+      </section>
+      <details>
+        <summary>迁移日志（原始诊断）</summary>
+        <div class="logs" id="logs"></div>
+      </details>
+      <div class="actions">
+        <button class="danger" id="btnCancel" disabled>取消迁移</button>
+        <button id="btnClose">关闭弹窗</button>
+      </div>
+  </dialog>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -160,42 +193,92 @@ let speedHistory = [];
 let dirtyHistory = [];
 const MAX_POINTS = 120;
 let running = false;
+let submitting = false;
+let cancelling = false;
+let canCancel = false;
+const dialog = $('progress');
+$('btnProgress').onclick = () => dialog.showModal();
+$('btnClose').onclick = () => dialog.close();
 
 // 加载虚拟机列表
 async function loadVMs() {
   try {
     const r = await fetch('/api/vms');
     const j = await r.json();
-    if (j.error) { $('err').textContent = j.error; return; }
-    $('vmSelect').innerHTML = (j.vms || []).map(v => `<option value="${v}">${v}</option>`).join('');
-  } catch (e) { $('err').textContent = '获取虚拟机列表失败: ' + e; }
+    if (!r.ok || j.error) throw new Error();
+    $('vmSelect').replaceChildren(...(j.vms || []).map(v => new Option(v, v)));
+  } catch { $('err').textContent = '获取虚拟机列表失败，请检查服务和本机 libvirt。'; }
 }
 
-// 发起迁移
+async function post(path, body) {
+  const options = { method: 'POST' };
+  if (body) {
+    options.headers = { 'Content-Type': 'application/json' };
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(path, options);
+  return { ok: response.ok, data: await response.json() };
+}
+
 $('btnStart').onclick = async () => {
   $('err').textContent = '';
   const body = {
     vm: $('vmSelect').value,
     target: $('target').value.trim(),
+    probe_url: $('probeURL').value.trim(),
     copy: $('copy').value,
-    bandwidth: parseInt($('bandwidth').value) || 0
+    bandwidth: Number($('bandwidth').value)
   };
-  if (!body.vm || !body.target) { $('err').textContent = '请选择虚拟机并填写目标 URI'; return; }
-  const r = await fetch('/api/migrate', {
-    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
-  });
-  const j = await r.json();
-  if (j.error) { $('err').textContent = j.error; }
+  if (!body.vm || !body.target) {
+    $('err').textContent = '请选择虚拟机并填写目标 URI。';
+    return;
+  }
+  if (!Number.isSafeInteger(body.bandwidth) || body.bandwidth < 0) {
+    $('err').textContent = '带宽上限必须为非负整数。';
+    return;
+  }
+  submitting = true;
+  $('btnStart').disabled = true;
+  try {
+    const { ok, data } = await post('/api/migrate', body);
+    if (!ok) {
+      $('err').textContent = data.error || '迁移请求提交失败。';
+      return;
+    }
+    speedHistory = [];
+    dirtyHistory = [];
+    drawChart();
+    renderState({ sample: { status: 'starting', phase: 'checking' }, running: true });
+    $('actionError').textContent = '';
+    if (!dialog.open) dialog.showModal();
+  } catch {
+    $('err').textContent = '无法确认迁移请求是否已提交，请查看迁移状态。';
+  } finally {
+    submitting = false;
+    $('btnStart').disabled = running;
+  }
 };
 
-// 取消
 $('btnCancel').onclick = async () => {
-  await fetch('/api/cancel', { method: 'POST' });
+  cancelling = true;
+  $('btnCancel').disabled = true;
+  $('actionError').textContent = '';
+  try {
+    const { ok, data } = await post('/api/cancel');
+    if (!ok) $('actionError').textContent = data.error || '取消迁移失败。';
+  } catch {
+    $('actionError').textContent = '无法确认取消请求是否已提交，请查看迁移状态。';
+  } finally {
+    cancelling = false;
+    $('btnCancel').disabled = !canCancel;
+  }
 };
 
 function setStatus(st) {
   const badge = $('statusBadge');
-  badge.textContent = st || '空闲';
+  const labels = { starting: '准备中', active: '进行中', completed: '已完成',
+    failed: '失败', cancelled: '已取消' };
+  badge.textContent = labels[st] || (running ? '进行中' : '空闲');
   badge.className = 'badge';
   if (st === 'active' || st === 'starting') badge.classList.add('active');
   else if (st === 'failed') badge.classList.add('failed');
@@ -219,28 +302,104 @@ function drawChart() {
   draw(dirtyHistory, 'dirtyLine', max);
 }
 
-// SSE 实时流
-function connectStream() {
-  const es = new EventSource('/api/stream');
-  es.onmessage = ev => {
-    let st;
-    try { st = JSON.parse(ev.data); } catch { return; }
+async function loadMeasurements() {
+  const show = $('measurements');
+  $('timingReport').textContent = '正在读取测量记录…';
+  $('diskReport').textContent = '';
+  $('memoryReport').textContent = '';
+  $('businessReport').textContent = '';
+  try {
+    const response = await fetch('/api/record', { cache: 'no-store' });
+    if (!response.ok) throw new Error();
+    const r = await response.json();
+    if (show.hidden) return;
+    const q = r.qemu;
+    const downtime = q.downtime ?? r.final?.downtime_ms;
+    const qemuTiming = [q['total-time'], q['setup-time'], q.downtime];
+    const jobTiming = [r.final?.job_elapsed_ms, r.final?.setup_ms, r.final?.downtime_ms];
+    const timing = qemuTiming.every(Number.isFinite) ? qemuTiming : jobTiming;
+    const precopy = timing.every(Number.isFinite) ? timing[0] - timing[1] - timing[2] : null;
+    const seconds = ms => Number.isFinite(ms) && ms >= 0 ? (ms / 1000).toFixed(3) + ' 秒' : '未获取';
+    const command = r.command_started && r.command_ended
+      ? Date.parse(r.command_ended) - Date.parse(r.command_started) : null;
+    const observed = r.target_running_observed && r.command_ended
+      ? Date.parse(r.target_running_observed) - Date.parse(r.command_ended) : null;
+    $('timingReport').textContent = '迁移总耗时 ' + seconds(command) + '（迁移命令开始至结束）' +
+      ' · 预拷贝估算 ' + seconds(precopy) +
+      ' · 准备 ' + seconds(q['setup-time'] ?? r.final?.setup_ms) +
+      ' · 最终切换停机窗口 ' + seconds(downtime) +
+      ' · 命令结束至查到目标运行 ' + seconds(observed) + '（核验延迟）';
+
+    const probe = r.business;
+    let business = '未填写业务地址';
+    if (probe) {
+      if (!probe.baseline_ok) business = '迁移前探测失败，无法判断迁移导致的停顿';
+      else if (probe.failed_at_end) business = '观测到请求失败，结束时尚未确认恢复';
+      else if (probe.recovered) business = seconds(probe.failure_window_ms) + '（最长一次从首个失败请求发出到恢复）';
+      else if (probe.successes < 2) business = '探测样本不足';
+      else business = '采样期间未观测到请求失败';
+      business += ' · 成功 ' + probe.successes + ' 次，失败 ' + probe.failures + ' 次';
+    }
+    $('businessReport').textContent = '业务中断 · ' + business;
+
+    const samples = r.samples || [];
+    const rate = value => Number.isFinite(value) ? value.toFixed(1) + ' MiB/s' : '未获取';
+    const peak = key => samples.reduce((max, item) =>
+      Number.isFinite(item[key]) ? Math.max(max ?? 0, item[key]) : max, null);
+    const disk = samples.filter(item => Number.isFinite(item.disk_mib) && item.disk_mib > 0);
+    const first = disk[0], last = disk.at(-1);
+    const elapsed = disk.length > 1 ? Date.parse(last.at) - Date.parse(first.at) : null;
+    const delta = disk.length > 1 ? last.disk_mib - first.disk_mib : 0;
+    const average = elapsed > 0 && delta > 0 ? delta * 1000 / elapsed : null;
+    const finalDisk = r.final?.disk_mib;
+    const diskSize = Number.isFinite(finalDisk) ? (finalDisk / 1024).toFixed(2) + ' GiB'
+      : last ? (last.disk_mib / 1024).toFixed(2) + ' GiB（末次采样）' : '未获取';
+    $('diskReport').textContent = r.copy_mode === 'none' ? '磁盘 · 共享存储模式' :
+      '磁盘已处理 ' + diskSize + ' · 观测窗口 ' + seconds(elapsed) +
+      ' · 窗口平均 ' + rate(average) +
+      ' · 按该速率复制 20 GiB 约 ' + seconds(average ? 20480000 / average : null);
+    $('memoryReport').textContent = '内存采样峰值 ' + rate(peak('memory_mib_per_s')) +
+      ' · 磁盘报告速率峰值 ' + rate(peak('disk_mib_per_s'));
+  } catch {
+    $('timingReport').textContent = '读取迁移测量记录失败。';
+  }
+}
+
+function renderState(st) {
     const s = st.sample;
     const stStatus = (s.status || '').toLowerCase();
-    const isDone = stStatus === 'completed' || stStatus === 'failed' || stStatus === 'cancelled';
-
+    const wasRunning = running;
     running = !!st.running;
-    $('btnStart').disabled = running;
-    $('btnCancel').disabled = !running;
-    setStatus(s.status);
-    $('err').textContent = st.error || '';
+    $('btnStart').disabled = running || submitting;
+    canCancel = running && s.phase !== 'finalizing' && s.phase !== 'verifying';
+    $('btnCancel').disabled = !canCancel || cancelling;
+    $('btnProgress').disabled = !stStatus;
+    const phases = { checking: '1. 源端预检', target_check: '2. 检查目标 libvirt 控制连接', connecting: '3. 准备目标端',
+      transferring: '4. 传输迁移数据', finalizing: '5. 读取最终迁移统计', verifying: '6. 核验源端与目标端状态' };
+    const phase = phases[s.phase];
+    $('phase').textContent = phase ? (running ? phase : '最后阶段 · ' + phase) : '';
+    setStatus(stStatus);
+    const terminal = ['completed', 'failed', 'cancelled'].includes(stStatus);
+    const measurements = $('measurements');
+    const needsRecord = terminal && (measurements.hidden || wasRunning);
+    measurements.hidden = !terminal;
+    if (needsRecord) loadMeasurements();
+    const showPlacement = stStatus === 'completed';
+    $('placement').hidden = !showPlacement;
+    if (showPlacement) {
+      $('placement').dataset.verified = String(!!s.verified);
+      $('placementTitle').textContent = s.verified ? '已确认虚拟机迁至目标端' : '迁移命令已完成，运行位置待确认';
+      $('sourceCheck').textContent = '源端 · ' + (s.source_check || '未取得状态');
+      $('targetCheck').textContent = '目标端 · ' + (s.target_check || '未取得状态');
+    }
+    $('jobError').textContent = st.error || '';
 
     $('sProcessed').textContent = (s.data_processed || 0).toFixed(0);
     $('sRemaining').textContent = (s.data_remaining || 0).toFixed(0);
     $('sSpeed').textContent = (s.mem_bandwidth || 0).toFixed(1);
     $('sDirty').textContent = (s.dirty_rate || 0).toFixed(1);
     $('sIter').textContent = s.iteration || 0;
-    $('sDowntime').textContent = (s.downtime_ms || 0).toFixed(0);
+    $('sDowntime').textContent = st.downtime_available ? s.downtime_ms.toFixed(0) : '—';
     $('sElapsed').textContent = (s.elapsed_s || 0).toFixed(0);
 
     let pct;
@@ -254,14 +413,14 @@ function connectStream() {
     $('sPercent').textContent = pct.toFixed(1);
     $('bar').style.width = pct + '%';
 
-    if (running || (stStatus === 'active' && !isDone)) {
+    if (running && s.phase === 'transferring') {
       speedHistory.push(s.mem_bandwidth || 0);
       dirtyHistory.push(s.dirty_rate || 0);
       if (speedHistory.length > MAX_POINTS) speedHistory.shift();
       if (dirtyHistory.length > MAX_POINTS) dirtyHistory.shift();
       drawChart();
     }
-    if (!running && stStatus === 'completed') {
+    if (wasRunning && !running && stStatus === 'completed') {
       // 结束后速率归零，曲线末端补一个 0，视觉上收口
       speedHistory.push(0); dirtyHistory.push(0);
       if (speedHistory.length > MAX_POINTS) speedHistory.shift();
@@ -269,14 +428,23 @@ function connectStream() {
       drawChart();
     }
 
-    if (st.logs && st.logs.length) {
+    {
       const box = $('logs');
       const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
-      box.textContent = st.logs.join('\n');
+      box.textContent = (st.logs || []).join('\n');
       if (atBottom) box.scrollTop = box.scrollHeight;
     }
+}
+
+function connectStream() {
+  const es = new EventSource('/api/stream');
+  es.onopen = () => { $('streamError').textContent = ''; };
+  es.onerror = () => { $('streamError').textContent = '实时连接中断，正在重连。'; };
+  es.onmessage = ev => {
+    let state;
+    try { state = JSON.parse(ev.data); } catch { return; }
+    if (!submitting) renderState(state);
   };
-  es.onerror = () => setTimeout(connectStream, 2000);
 }
 
 loadVMs();

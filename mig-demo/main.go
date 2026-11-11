@@ -19,6 +19,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -43,31 +46,81 @@ var (
 
 // Sample 是某一时刻 virsh domjobinfo 解析出来的一组真实数字。
 type Sample struct {
-	Time          string  `json:"time"`
-	Status        string  `json:"status"`
-	ElapsedS      float64 `json:"elapsed_s"`
-	DataProcessed float64 `json:"data_processed"` // MiB
-	DataTotal     float64 `json:"data_total"`     // MiB
-	DataRemaining float64 `json:"data_remaining"` // MiB
-	MemBandwidth  float64 `json:"mem_bandwidth"`  // MiB/s
-	DiskBandwidth float64 `json:"disk_bandwidth"` // MiB/s
-	DirtyRate     float64 `json:"dirty_rate"`     // MiB/s
-	Iteration     int     `json:"iteration"`
-	DowntimeMs    float64 `json:"downtime_ms"`
+	Measurement   Measurement `json:"-"`
+	Time          string      `json:"time"`
+	SourceCheck   string      `json:"source_check,omitempty"`
+	TargetCheck   string      `json:"target_check,omitempty"`
+	Verified      bool        `json:"verified"`
+	Phase         string      `json:"phase"`
+	Status        string      `json:"status"`
+	ElapsedS      float64     `json:"elapsed_s"`
+	DataProcessed float64     `json:"data_processed"` // MiB
+	DataTotal     float64     `json:"data_total"`     // MiB
+	DataRemaining float64     `json:"data_remaining"` // MiB
+	MemBandwidth  float64     `json:"mem_bandwidth"`  // MiB/s
+	DiskBandwidth float64     `json:"disk_bandwidth"` // MiB/s
+	DirtyRate     float64     `json:"dirty_rate"`     // MiB/s
+	Iteration     int         `json:"iteration"`
+	DowntimeMs    float64     `json:"downtime_ms"`
+}
+
+// Measurement keeps values absent when the hypervisor did not report them.
+type Measurement struct {
+	JobElapsedMS     *float64  `json:"job_elapsed_ms"`
+	SetupMS          *float64  `json:"setup_ms"`
+	At               time.Time `json:"at"`
+	MemoryMiB        *float64  `json:"memory_mib"`
+	DiskMiB          *float64  `json:"disk_mib"`
+	DiskTotalMiB     *float64  `json:"disk_total_mib"`
+	DiskRemainingMiB *float64  `json:"disk_remaining_mib"`
+	MemoryRate       *float64  `json:"memory_mib_per_s"`
+	DiskRate         *float64  `json:"disk_mib_per_s"`
+	DowntimeMS       *float64  `json:"downtime_ms"`
+}
+
+type BusinessProbe struct {
+	Successes       int      `json:"successes"`
+	Failures        int      `json:"failures"`
+	FailureWindowMS *float64 `json:"failure_window_ms"`
+	BaselineOK      bool     `json:"baseline_ok"`
+	Recovered       bool     `json:"recovered"`
+	FailedAtEnd     bool     `json:"failed_at_end"`
+}
+
+type MigrationRecord struct {
+	Business              *BusinessProbe `json:"business"`
+	Started               time.Time      `json:"started"`
+	CopyMode              string         `json:"copy_mode"`
+	Bandwidth             int            `json:"bandwidth_limit_mib_per_s"`
+	CommandStarted        *time.Time     `json:"command_started"`
+	CommandEnded          *time.Time     `json:"command_ended"`
+	TargetRunningObserved *time.Time     `json:"target_running_observed"`
+	QEMU                  QEMUTiming     `json:"qemu"`
+	Final                 *Measurement   `json:"final"`
+	Samples               []Measurement  `json:"samples"`
+}
+
+type QEMUTiming struct {
+	TotalMS    *float64 `json:"total-time"`
+	SetupMS    *float64 `json:"setup-time"`
+	DowntimeMS *float64 `json:"downtime"`
+	Status     string   `json:"status"`
 }
 
 // State 是推给前端的完整状态快照。
 type State struct {
-	Sample  Sample   `json:"sample"`
-	Running bool     `json:"running"`
-	VM      string   `json:"vm"`
-	Target  string   `json:"target"`
-	Error   string   `json:"error"`
-	Logs    []string `json:"logs"`
+	DowntimeAvailable bool     `json:"downtime_available"`
+	Sample            Sample   `json:"sample"`
+	Running           bool     `json:"running"`
+	VM                string   `json:"vm"`
+	Target            string   `json:"target"`
+	Error             string   `json:"error"`
+	Logs              []string `json:"logs"`
 }
 
 // App 保存服务端内存状态。
 type App struct {
+	record  MigrationRecord
 	mu      sync.Mutex
 	sample  Sample
 	running bool
@@ -100,12 +153,13 @@ func (a *App) snapshot() State {
 	logs := make([]string, len(a.logs))
 	copy(logs, a.logs)
 	return State{
-		Sample:  a.sample,
-		Running: a.running,
-		VM:      a.vm,
-		Target:  a.target,
-		Error:   a.lastErr,
-		Logs:    logs,
+		DowntimeAvailable: a.sample.Measurement.DowntimeMS != nil,
+		Sample:            a.sample,
+		Running:           a.running,
+		VM:                a.vm,
+		Target:            a.target,
+		Error:             a.lastErr,
+		Logs:              logs,
 	}
 }
 
@@ -114,6 +168,7 @@ func (a *App) snapshot() State {
 // runVirsh 执行一条 virsh 命令并返回 stdout。
 func runVirsh(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "virsh", args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	out, err := cmd.Output()
 	return string(out), err
 }
@@ -183,9 +238,18 @@ func parseMillis(v string) float64 {
 	return n
 }
 
-// parseJobInfo 解析 virsh domjobinfo 的输出。found=false 表示当前没有迁移任务。
+func measured(value string, parse func(string) float64) *float64 {
+	if !reNum.MatchString(value) {
+		return nil
+	}
+	result := parse(value)
+	return &result
+}
+
+// parseJobInfo 解析 virsh domjobinfo 的输出。found=false 表示当前没有可取消的迁移任务。
 func parseJobInfo(out string) (Sample, bool) {
 	s := Sample{Time: time.Now().Format("15:04:05")}
+	s.Measurement.At = time.Now()
 	found := false
 	sc := bufio.NewScanner(strings.NewReader(out))
 	for sc.Scan() {
@@ -201,23 +265,43 @@ func parseJobInfo(out string) (Sample, bool) {
 			s.Status = v
 			found = true
 		case "Time elapsed":
-			s.ElapsedS = parseHMS(v)
+			if strings.Contains(v, ":") {
+				s.ElapsedS = parseHMS(v)
+				elapsed := s.ElapsedS * 1000
+				s.Measurement.JobElapsedMS = &elapsed
+			} else {
+				s.Measurement.JobElapsedMS = measured(v, parseMillis)
+				s.ElapsedS = parseMillis(v) / 1000
+			}
+		case "Setup time":
+			s.Measurement.SetupMS = measured(v, parseMillis)
 		case "Data processed":
 			s.DataProcessed = parseMiB(v)
 		case "Data total":
 			s.DataTotal = parseMiB(v)
 		case "Data remaining":
 			s.DataRemaining = parseMiB(v)
+		case "Memory processed":
+			s.Measurement.MemoryMiB = measured(v, parseMiB)
+		case "File processed", "Disk processed":
+			s.Measurement.DiskMiB = measured(v, parseMiB)
+		case "File total", "Disk total":
+			s.Measurement.DiskTotalMiB = measured(v, parseMiB)
+		case "File remaining", "Disk remaining":
+			s.Measurement.DiskRemainingMiB = measured(v, parseMiB)
 		case "Memory bandwidth":
 			s.MemBandwidth = parseMiB(v)
+			s.Measurement.MemoryRate = measured(v, parseMiB)
 		case "Disk bandwidth":
 			s.DiskBandwidth = parseMiB(v)
+			s.Measurement.DiskRate = measured(v, parseMiB)
 		case "Dirty rate":
 			s.DirtyRate = parseMiB(v)
-		case "Iteration":
+		case "Iteration", "Memory iteration":
 			s.Iteration, _ = strconv.Atoi(v)
-		case "Total downtime":
+		case "Total downtime", "Downtime":
 			s.DowntimeMs = parseMillis(v)
+			s.Measurement.DowntimeMS = measured(v, parseMillis)
 		}
 	}
 	return s, found
@@ -226,7 +310,7 @@ func parseJobInfo(out string) (Sample, bool) {
 // ---------- 迁移执行 ----------
 
 // startMigration 在后台执行一次真实热迁移（三次尝试：copy-storage-* 旧参数 → --disks-uri → 共享存储）。
-func (a *App) startMigration(vm, target, copyMode string, bandwidth int) error {
+func (a *App) startMigration(vm, target, copyMode, dataURI, probeURL string, bandwidth int) error {
 	a.mu.Lock()
 	if a.running {
 		a.mu.Unlock()
@@ -243,11 +327,12 @@ func (a *App) startMigration(vm, target, copyMode string, bandwidth int) error {
 	a.target = target
 	a.lastErr = ""
 	a.logs = a.logs[:0]
-	a.sample = Sample{Status: "starting", Time: time.Now().Format("15:04:05")}
+	a.sample = Sample{Phase: "checking", Status: "starting", Time: time.Now().Format("15:04:05")}
 	a.startAt = time.Now()
+	a.record = MigrationRecord{Started: a.startAt, CopyMode: copyMode, Bandwidth: bandwidth, Samples: []Measurement{}}
 	a.mu.Unlock()
 
-	go a.runMigration(ctx, vm, target, copyMode, bandwidth)
+	go a.runMigration(ctx, vm, target, copyMode, dataURI, probeURL, bandwidth)
 	return nil
 }
 
@@ -285,15 +370,36 @@ func parseSSHTarget(target string) (host, port string) {
 }
 
 // runMigration 执行迁移，并在发起前做一次“能不能迁”的硬检查。
-func (a *App) runMigration(ctx context.Context, vm, target, copyMode string, bandwidth int) {
+func (a *App) runMigration(ctx context.Context, vm, target, copyMode, dataURI, probeURL string, bandwidth int) {
 	// 预检：PCI 直通设备在原理上不可迁移，先查出来给出人话解释。
-	if reason, blocked := checkMigrationBlockers(vm); blocked {
+	if reason, blocked := checkMigrationBlockers(ctx, vm); blocked {
 		a.appendLog("预检不通过: " + reason)
 		a.finish("failed", reason)
 		return
 	}
 
+	a.mu.Lock()
+	a.sample.Phase = "target_check"
+	a.mu.Unlock()
+	_, err := queryVirsh(ctx, "--readonly", "--connect", target, "hostname")
+	if ctx.Err() != nil {
+		a.finish("cancelled", "迁移已被取消")
+		return
+	}
+	if err != nil {
+		a.appendLog("目标控制连接预检失败：" + err.Error())
+		a.finish("failed", "目标控制连接预检失败："+migrationError(err.Error()))
+		return
+	}
+	a.appendLog("目标 libvirt 控制连接预检通过")
+	if dataURI != "" {
+		a.appendLog("QEMU 数据连接地址：" + dataURI)
+	}
+
 	base := []string{"migrate", "--live", "--persistent", "--verbose"}
+	if dataURI != "" {
+		base = append(base, "--migrateuri", dataURI)
+	}
 	if bandwidth > 0 {
 		base = append(base, "--bandwidth", strconv.Itoa(bandwidth))
 	}
@@ -314,32 +420,221 @@ func (a *App) runMigration(ctx context.Context, vm, target, copyMode string, ban
 		attempts = append(attempts, attempt{"共享存储", append(append([]string{}, base...), vm, target)})
 	}
 
+	var stopProbe func()
+	if probeURL != "" {
+		stopProbe = a.startBusinessProbe(ctx, probeURL)
+		defer stopProbe()
+	}
+
 	lastErrs := make([]string, 0, len(attempts))
 	for _, at := range attempts {
 		if ctx.Err() != nil {
+			if stopProbe != nil {
+				stopProbe()
+			}
 			a.finish("cancelled", "迁移已被取消")
 			return
 		}
 		a.appendLog("尝试 [" + at.name + "]: virsh " + strings.Join(at.args, " "))
+		a.mu.Lock()
+		a.sample.Phase = "connecting"
+		a.mu.Unlock()
 		err := a.runOne(ctx, vm, at.args)
 		if err == nil {
+			a.verifyPlacement(vm, target)
+			if stopProbe != nil {
+				stopProbe()
+			}
 			a.finish("completed", "")
 			return
 		}
 		if ctx.Err() != nil {
+			if stopProbe != nil {
+				stopProbe()
+			}
 			a.finish("cancelled", "迁移已被取消")
 			return
 		}
 		a.appendLog("该方式失败: " + err.Error())
-		lastErrs = append(lastErrs, "["+at.name+"] "+err.Error())
+		lastErrs = append(lastErrs, migrationError(err.Error()))
+	}
+	if stopProbe != nil {
+		stopProbe()
 	}
 	a.finish("failed", strings.Join(lastErrs, " | "))
 }
 
+// startBusinessProbe takes a baseline before migration and samples until the result is ready.
+func (a *App) startBusinessProbe(parent context.Context, endpoint string) func() {
+	ctx, cancel := context.WithCancel(parent)
+	client := &http.Client{
+		Timeout:       500 * time.Millisecond,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	result := BusinessProbe{}
+	var firstFailure time.Time
+	probe := func() bool {
+		start := time.Now()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return false
+		}
+		req.Header.Set("Cache-Control", "no-cache")
+		res, err := client.Do(req)
+		ok := false
+		if err == nil {
+			res.Body.Close()
+			ok = res.StatusCode >= 200 && res.StatusCode < 300
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		if ok {
+			result.Successes++
+			if !firstFailure.IsZero() {
+				ms := float64(time.Since(firstFailure).Microseconds()) / 1000
+				if result.FailureWindowMS == nil || ms > *result.FailureWindowMS {
+					result.FailureWindowMS = &ms
+				}
+				result.Recovered = true
+				firstFailure = time.Time{}
+			}
+		} else {
+			result.Failures++
+			if firstFailure.IsZero() {
+				firstFailure = start
+			}
+		}
+		return ok
+	}
+	result.BaselineOK = probe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				probe()
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			<-done
+			client.CloseIdleConnections()
+			result.FailedAtEnd = !firstFailure.IsZero()
+			a.mu.Lock()
+			a.record.Business = &result
+			a.mu.Unlock()
+		})
+	}
+}
+
+// verifyPlacement checks both hosts after virsh migrate has returned successfully.
+func (a *App) verifyPlacement(vm, target string) {
+	a.mu.Lock()
+	a.sample.Phase = "verifying"
+	a.mu.Unlock()
+
+	source, sourceErr := queryVirsh(context.Background(), "list", "--name")
+	destination, targetErr := queryVirsh(context.Background(), "--connect", target, "domstate", "--domain", vm)
+	sourceActive := false
+	for _, name := range strings.Split(source, "\n") {
+		if strings.TrimSpace(name) == vm {
+			sourceActive = true
+			break
+		}
+	}
+
+	sourceCheck := "未发现该虚拟机在源端运行"
+	switch {
+	case sourceErr != nil:
+		sourceCheck = "无法查询源端状态"
+		a.appendLog("源端状态核验失败：" + sourceErr.Error())
+	case sourceActive:
+		sourceCheck = "虚拟机仍在源端活动"
+	}
+	targetRunning := targetErr == nil && strings.TrimSpace(destination) == "running"
+	targetCheck := "已确认虚拟机在目标端运行"
+	switch {
+	case targetErr != nil:
+		targetCheck = "无法查询目标端状态"
+		a.appendLog("目标端状态核验失败：" + targetErr.Error())
+	case !targetRunning:
+		targetCheck = "目标端虚拟机未处于运行状态"
+		a.appendLog("目标端虚拟机原始状态：" + strings.TrimSpace(destination))
+	}
+
+	a.mu.Lock()
+	a.sample.SourceCheck = sourceCheck
+	a.sample.TargetCheck = targetCheck
+	if targetRunning {
+		observed := time.Now()
+		a.record.TargetRunningObserved = &observed
+	}
+	a.sample.Verified = sourceErr == nil && !sourceActive && targetRunning
+	a.mu.Unlock()
+}
+
+func queryVirsh(parent context.Context, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "virsh", args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("virsh 操作超时")
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+		return "", fmt.Errorf("%s", strings.TrimSpace(string(exitErr.Stderr)))
+	}
+	return string(out), err
+}
+
+// migrationError returns a Chinese summary while the log keeps the original diagnostic.
+func migrationError(raw string) string {
+	message := strings.ToLower(raw)
+	for _, rule := range []struct {
+		terms   []string
+		summary string
+	}{
+		{[]string{"host key verification", "remote host identification has changed"}, "目标主机的 SSH 密钥校验失败"},
+		{[]string{"permission denied", "authentication failed", "authentication unavailable", "no supported authentication methods"}, "认证失败或权限不足"},
+		{[]string{"connection refused"}, "目标服务拒绝连接"},
+		{[]string{"timed out", "timeout", "操作超时"}, "迁移连接或操作超时"},
+		{[]string{"no route to host", "network is unreachable"}, "目标主机网络不可达"},
+		{[]string{"could not resolve", "name or service not known"}, "无法解析目标主机名"},
+		{[]string{"domain not found", "failed to get domain"}, "找不到源虚拟机"},
+		{[]string{"domain is not running", "domain is not active"}, "源虚拟机未运行"},
+		{[]string{"already exists", "already defined"}, "目标端已有同名资源"},
+		{[]string{"no space left"}, "存储空间不足"},
+		{[]string{"cannot allocate memory", "out of memory"}, "宿主机内存不足"},
+		{[]string{"incompatible", "cpu model"}, "源端与目标端配置不兼容"},
+		{[]string{"启动 virsh 失败"}, "无法启动 virsh，请检查程序是否已安装"},
+		{[]string{"no such file", "failed to open disk"}, "所需文件或磁盘不可用"},
+		{[]string{"unsupported", "not supported"}, "当前环境不支持所请求的迁移操作"},
+		{[]string{"failed to connect", "connection reset", "broken pipe"}, "无法建立或保持迁移连接"},
+	} {
+		for _, term := range rule.terms {
+			if strings.Contains(message, term) {
+				return rule.summary + "。原始诊断见迁移日志。"
+			}
+		}
+	}
+	return "迁移执行失败。原始诊断见迁移日志。"
+}
+
 // checkMigrationBlockers 检查原理上不可热迁移的配置，返回人话原因。
 // 覆盖：PCI 直通（hostdev）、快照链。
-func checkMigrationBlockers(vm string) (string, bool) {
-	xmlText, err := runVirsh(context.Background(), "dumpxml", vm)
+func checkMigrationBlockers(ctx context.Context, vm string) (string, bool) {
+	xmlText, err := runVirsh(ctx, "dumpxml", vm)
 	if err != nil {
 		return "", false // 拿不到 XML 就交给后续步骤报错
 	}
@@ -350,7 +645,7 @@ func checkMigrationBlockers(vm string) (string, bool) {
 			"若业务必须使用直通，则该虚拟机不适合热迁移。", vm), true
 	}
 	// 快照：磁盘变成 backing file 链，只搬最上层会在目标端断链。
-	if out, err := runVirsh(context.Background(), "snapshot-list", vm); err == nil {
+	if out, err := runVirsh(ctx, "snapshot-list", vm); err == nil {
 		cnt := 0
 		for _, line := range strings.Split(out, "\n") {
 			t := strings.TrimSpace(line)
@@ -375,10 +670,14 @@ func (a *App) runOne(ctx context.Context, vm string, args []string) error {
 	cmd.Stderr = &stderrBuf
 	stdout, _ := cmd.StdoutPipe()
 
+	started := time.Now()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("启动 virsh 失败: %w", err)
 	}
 
+	a.mu.Lock()
+	a.record.CommandStarted = &started
+	a.mu.Unlock()
 	pollCtx, pollCancel := context.WithCancel(context.Background())
 	defer pollCancel()
 	go a.pollLoop(pollCtx, vm)
@@ -389,7 +688,11 @@ func (a *App) runOne(ctx context.Context, vm string, args []string) error {
 	})
 
 	err := cmd.Wait()
+	ended := time.Now()
 	pollCancel()
+	a.mu.Lock()
+	a.record.CommandEnded = &ended
+	a.mu.Unlock()
 
 	if err != nil {
 		msg := strings.TrimSpace(stderrBuf.String())
@@ -398,6 +701,10 @@ func (a *App) runOne(ctx context.Context, vm string, args []string) error {
 		}
 		return fmt.Errorf("%s", msg)
 	}
+	a.mu.Lock()
+	a.cancel = nil
+	a.sample.Phase = "finalizing"
+	a.mu.Unlock()
 	a.finalSample(vm) // 补采最终统计（downtime 等）
 	return nil
 }
@@ -413,41 +720,53 @@ func (a *App) pollLoop(ctx context.Context, vm string) {
 		case <-t.C:
 			out, err := runVirsh(ctx, "domjobinfo", vm)
 			if err != nil {
-				return // 虚拟机已离开源端或无任务，由主流程收尾
+				continue
 			}
 			s, ok := parseJobInfo(out)
 			if !ok {
-				return
+				continue
 			}
 			a.mu.Lock()
-			a.sample = s
+			if ctx.Err() == nil && !strings.EqualFold(s.Status, "none") {
+				s.Status = "active"
+				s.Phase = "transferring"
+				a.sample = s
+				a.record.Samples = append(a.record.Samples, s.Measurement)
+			}
 			a.mu.Unlock()
 		}
 	}
 }
 
-// finalSample 在 virsh migrate 返回后补采最后一次任务统计。
-// 迁移完成时虚拟机已从源端消失，domjobinfo 通常查不到；
-// 但 libvirt 会在短时间内保留任务记录，多试几次能拿到最终的 Total time / Downtime。
+// finalSample reads libvirt's completed job and QEMU's completed migration stats.
 func (a *App) finalSample(vm string) {
-	for i := 0; i < 3; i++ {
-		time.Sleep(300 * time.Millisecond)
-		out, err := runVirsh(context.Background(), "domjobinfo", vm)
-		if err != nil {
-			continue
+	out, err := queryVirsh(context.Background(), "domjobinfo", "--completed", "--keep-completed", "--domain", vm)
+	if s, ok := parseJobInfo(out); err == nil && ok && strings.EqualFold(s.Status, "completed") {
+		a.mu.Lock()
+		s.Phase, s.Status = a.sample.Phase, a.sample.Status
+		a.sample = s
+		a.record.Final = &s.Measurement
+		a.mu.Unlock()
+	}
+	out, err = queryVirsh(context.Background(), "qemu-monitor-command", "--domain", vm, `{"execute":"query-migrate"}`)
+	var response struct {
+		Return QEMUTiming `json:"return"`
+	}
+	if err == nil && json.Unmarshal([]byte(out), &response) == nil && response.Return.Status == "completed" {
+		a.mu.Lock()
+		a.record.QEMU = response.Return
+		if response.Return.DowntimeMS != nil && a.sample.Measurement.DowntimeMS == nil {
+			a.sample.DowntimeMs = *response.Return.DowntimeMS
+			a.sample.Measurement.DowntimeMS = response.Return.DowntimeMS
 		}
-		if s, ok := parseJobInfo(out); ok {
-			a.mu.Lock()
-			a.sample = s
-			a.mu.Unlock()
-			return
-		}
+		a.mu.Unlock()
 	}
 }
 
 func (a *App) finish(status, errMsg string) {
 	a.mu.Lock()
 	a.running = false
+	a.cancel = nil
 	a.sample.Status = status
 	a.lastErr = errMsg
 	// 迁移结束：切换发生在最后一次采样之后，收尾时把进度补齐、速率归零，
@@ -492,6 +811,20 @@ func (a *App) handleVMs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"vms": names})
 }
 
+func (a *App) handleRecord(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	record := a.record
+	snapshot := struct {
+		MigrationRecord
+		VM     string `json:"vm"`
+		Target string `json:"target"`
+		Result string `json:"result"`
+	}{record, a.vm, a.target, a.sample.Status}
+	a.mu.Unlock()
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, snapshot)
+}
+
 func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, a.snapshot())
 }
@@ -520,28 +853,60 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func migrationDataURI(target string) string {
+	uri, err := url.Parse(target)
+	if err != nil || uri.Scheme != "qemu+ssh" {
+		return ""
+	}
+	ip, err := netip.ParseAddr(uri.Hostname())
+	if err != nil {
+		return ""
+	}
+	host := ip.String()
+	if ip.Is6() {
+		host = "[" + host + "]"
+	}
+	return (&url.URL{Scheme: "tcp", Host: host}).String()
+}
+
 func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", 405)
+		writeJSON(w, 405, map[string]any{"error": "请求方法不受支持"})
 		return
 	}
 	var req struct {
-		VM        string `json:"vm"`
-		Target    string `json:"target"`
+		ProbeURL string `json:"probe_url"`
+		VM       string `json:"vm"`
+		Target   string `json:"target"`
+
 		Copy      string `json:"copy"`
 		Bandwidth int    `json:"bandwidth"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]any{"error": "请求体解析失败: " + err.Error()})
+		writeJSON(w, 400, map[string]any{"error": "迁移请求格式无效"})
 		return
 	}
 	if req.Copy == "" {
 		req.Copy = "all"
 	}
-	if req.Copy == "none" {
-		req.Copy = "none" // 共享存储：不加任何 copy 参数
+	if req.Copy != "all" && req.Copy != "inc" && req.Copy != "none" {
+		writeJSON(w, 400, map[string]any{"error": "存储复制方式无效"})
+		return
 	}
-	if err := a.startMigration(req.VM, req.Target, req.Copy, req.Bandwidth); err != nil {
+	if req.Bandwidth < 0 {
+		writeJSON(w, 400, map[string]any{"error": "带宽上限必须为非负整数"})
+		return
+	}
+	probeURL := strings.TrimSpace(req.ProbeURL)
+	if probeURL != "" {
+		endpoint, err := url.Parse(probeURL)
+		if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Hostname() == "" || endpoint.User != nil {
+			writeJSON(w, 400, map[string]any{"error": "请填写有效的 HTTP 或 HTTPS 业务健康检查地址"})
+			return
+		}
+	}
+	dataURI := migrationDataURI(req.Target)
+	if err := a.startMigration(req.VM, req.Target, req.Copy, dataURI, probeURL, req.Bandwidth); err != nil {
 		writeJSON(w, 409, map[string]any{"error": err.Error()})
 		return
 	}
@@ -549,11 +914,15 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, map[string]any{"error": "请求方法不受支持"})
+		return
+	}
 	a.mu.Lock()
 	cancel := a.cancel
 	a.mu.Unlock()
 	if cancel == nil {
-		writeJSON(w, 409, map[string]any{"error": "当前没有迁移任务"})
+		writeJSON(w, 409, map[string]any{"error": "当前没有可取消的迁移任务"})
 		return
 	}
 	cancel()
@@ -663,6 +1032,7 @@ func main() {
 	http.HandleFunc("/", app.handleIndex)
 	http.HandleFunc("/api/vms", app.handleVMs)
 	http.HandleFunc("/api/state", app.handleState)
+	http.HandleFunc("/api/record", app.handleRecord)
 	http.HandleFunc("/api/stream", app.handleStream)
 	http.HandleFunc("/api/migrate", app.handleMigrate)
 	http.HandleFunc("/api/cancel", app.handleCancel)
